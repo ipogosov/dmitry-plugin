@@ -1,0 +1,14 @@
+{
+  "name": "dmitry-plugin",
+  "owner": {
+    "name": "Ivan Pogosov"
+  },
+  "plugins": [
+    {
+      "name": "dmitry",
+      "description": "MCP proxy that routes all shell commands through filtered output, keeping your context window lean",
+      "source": "./plugins/dmitry",
+      "category": "development"
+    }
+  ]
+}
