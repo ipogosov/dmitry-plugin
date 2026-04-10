@@ -11,6 +11,18 @@
           }
         ]
       }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "env > /tmp/dmitry-hook-env.txt && echo '{}'",
+            "async": false
+          }
+        ]
+      }
     ]
   }
 }
