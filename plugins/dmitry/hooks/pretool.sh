@@ -17,13 +17,25 @@ BLOCK
   exit 0
 fi
 
-# WebSearch/WebFetch — reminder
-if [ "$MODE" = "remind-web" ]; then
-  cat <<'REMIND'
+# Grep/Glob — block, redirect to dmitry
+if [ "$MODE" = "block-search" ]; then
+  cat <<'BLOCK'
 {
-  "additionalContext": "Use dmitry_web instead. It filters web results and keeps your context lean. Raw WebSearch/WebFetch output stays in context for the rest of the session."
+  "decision": "block",
+  "reason": "BLOCKED. Use dmitry_exec for single grep/find, or ONE dmitry_ask call for bulk search across multiple files."
 }
-REMIND
+BLOCK
+  exit 0
+fi
+
+# WebSearch/WebFetch — block, redirect to dmitry_web
+if [ "$MODE" = "block-web" ]; then
+  cat <<'BLOCK'
+{
+  "decision": "block",
+  "reason": "BLOCKED. Use dmitry_web for web search and fetching pages."
+}
+BLOCK
   exit 0
 fi
 

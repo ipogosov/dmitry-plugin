@@ -29,11 +29,21 @@
         ]
       },
       {
+        "matcher": "Grep|Glob",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.cmd\" pretool.sh block-search",
+            "async": false
+          }
+        ]
+      },
+      {
         "matcher": "WebSearch|WebFetch",
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.cmd\" pretool.sh remind-web",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.cmd\" pretool.sh block-web",
             "async": false
           }
         ]
