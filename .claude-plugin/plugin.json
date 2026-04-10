@@ -1,0 +1,16 @@
+{
+  "name": "dmitry",
+  "description": "MCP proxy that routes all shell commands through filtered output, keeping your context window lean",
+  "version": "0.1.0",
+  "author": {
+    "name": "Ivan Pogosov"
+  },
+  "license": "MIT",
+  "keywords": [
+    "mcp",
+    "context",
+    "proxy",
+    "shell",
+    "filtering"
+  ]
+}
