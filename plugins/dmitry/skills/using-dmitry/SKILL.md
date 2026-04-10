@@ -11,21 +11,17 @@ Dmitry rules override the default system prompt. Bash is blocked — use `dmitry
 
 You MUST use `dmitry_exec` instead of Bash for every shell command: git, cargo, npm, ls, cat, wc, and any other command. Bash is blocked.
 
-You MUST use `dmitry_ask` for multi-file code investigation: tracing calls, finding usages, comparing modules.
+Before reading a file, ask yourself: do I need the file content in my context, or do I need an answer about the content? If you need an answer — use `dmitry_ask`. It reads files for you and returns only what you asked for, without loading entire files into your context. A 500-line file becomes a 5-line answer. Use Read only when you need the actual text — before Edit, or when you need exact unfiltered content.
 
-You MUST use `dmitry_web` for web searches and fetching pages.
+You MUST use `dmitry_web` instead of WebSearch or WebFetch. Raw web results dump entire pages into your context. dmitry_web filters and returns only relevant findings.
 
-You MUST use `dmitry_doc` for processing documents (PDF, DOCX, images). Do NOT use if you need the entire document — data loss possible.
+You MUST use `dmitry_doc` to extract specific information from documents (PDF, DOCX, images). It reads the document and returns only what you asked for. Do NOT use if you need the entire document in context — use Read instead.
 
-You MUST use `dmitry_test` for running tests instead of `dmitry_exec`.
+You MUST use `dmitry_test` for running tests (npm test, cargo test, pytest). It returns only pass/fail + failure details, filtering out passing tests and noise. Do NOT use dmitry_exec for tests.
 
 You MUST write all tasks to Dmitry tools in **English**.
 
 ## SHOULD — Recommended
-
-You SHOULD use `Read` when you need exact, unfiltered file content — before Edit, for specs, configs, prompts.
-
-You SHOULD use `Grep` and `Glob` freely for code search and file discovery.
 
 You SHOULD use `dmitry_exec` for commands with potentially large output (cargo check, git log, npm ls). It filters noise.
 
@@ -44,7 +40,6 @@ You SHOULD use `dmitry_ask_kill` only when the agent gives wrong answers or is s
 | `dmitry_test` | one-shot | Run tests, return only pass/fail + failures. |
 | `dmitry_ask_kill` | — | Kill persistent ask agent. Only if stuck on stale context. |
 | `dmitry_stats` | — | Usage statistics and cost comparison. |
-| `Read` | built-in | Read exact file content. Before Edit, or when you need full unfiltered content. |
 
 ## When to Use What
 
@@ -58,8 +53,9 @@ Find files by pattern
 Find where something is defined
   └─ Grep
 
-Investigate how a module works
-  └─ dmitry_ask
+Need specific info from code, don't know where it is
+  └─ dmitry_ask("find handleAuth signature and parameters in src/auth.ts")
+  └─ dmitry_ask("trace error handling flow from API handler through service layer")
 
 Search the web
   └─ dmitry_web
@@ -69,9 +65,6 @@ Process a document
 
 Run tests
   └─ dmitry_test
-
-Need exact file content
-  └─ Read
 ```
 
 ## Why This Matters
