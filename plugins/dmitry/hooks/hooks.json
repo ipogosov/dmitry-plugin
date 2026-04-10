@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo 'Dmitry plugin loaded'",
+            "command": "rm -f /tmp/dmitry-pretool-state",
             "async": false
           }
         ]
@@ -14,11 +14,11 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Bash",
+        "matcher": "Bash|Grep|Glob",
         "hooks": [
           {
             "type": "command",
-            "command": "env > /tmp/dmitry-hook-env.txt && echo '{}'",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/pretool.sh\"",
             "async": false
           }
         ]
