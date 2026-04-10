@@ -1,6 +1,6 @@
 ---
 name: using-dmitry
-description: Route ALL shell commands through dmitry_exec. Use dmitry_ask for code investigation, dmitry_web for search, dmitry_doc for documents, dmitry_test for tests, Read for exact file content.
+description: Route ALL shell commands through dmitry_exec. Use dmitry_ask for code investigation, dmitry_web to clean fetched pages (reader mode), dmitry_doc for documents, dmitry_test for tests, Read for exact file content.
 ---
 
 # Dmitry — Context-Aware Command Proxy
@@ -47,6 +47,7 @@ You SHOULD use `dmitry_ask` instead of Agent(Explore). It is persistent, cached,
 |------|------|-------------|
 | `dmitry_exec` | direct | Run any shell command with filtered output. Your primary tool. |
 | `dmitry_ask` | persistent | Code investigation: trace calls, find usages, compare modules. Context accumulates. |
+| `dmitry_web` | one-shot | Fetch URL, return clean text (reader mode). Use after WebSearch. Parallel-safe. |
 | `dmitry_doc` | one-shot | Process document (PDF/DOCX/MD/image), extract specific info. Parallel-safe. |
 | `dmitry_test` | one-shot | Run tests, return only pass/fail + failures. |
 | `dmitry_ask_kill` | — | Kill persistent ask agent. Only if stuck on stale context. |
@@ -60,10 +61,24 @@ Find a symbol       → Grep
 Find files          → Glob
 Edit a file         → Read → Edit
 Shell commands      → dmitry_exec (Bash is blocked)
-Web search          → WebSearch / WebFetch (direct)
+Web search          → WebSearch (you search) → dmitry_web(url) (clean page)
 Documents           → dmitry_doc
 Tests               → dmitry_test
 ```
+
+## Web Search Workflow
+
+You plan and execute web searches yourself via WebSearch. Then use `dmitry_web` to clean up pages:
+
+```
+1. WebSearch("query")           ← you decide what to search
+2. Pick relevant URLs from results
+3. dmitry_web("https://...")    ← returns clean readable text, no HTML noise
+4. Reason about the content     ← you analyze and decide
+```
+
+Do NOT delegate search planning to dmitry_web — it cannot search, only fetch and clean pages.
+Multiple dmitry_web calls can run in parallel for different URLs.
 
 ## Why This Matters
 

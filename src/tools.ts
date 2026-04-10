@@ -93,16 +93,26 @@ export async function handleAsk(
 export async function handleWeb(params: { task: string }): Promise<string> {
   const start = Date.now();
   const prompt = [
-    "TASK: Search the web and return findings. You have WebSearch and WebFetch tools.",
-    "Return: relevant facts, URLs, key quotes. No opinions, no recommendations.",
-    "If fetching a page, extract the specific information requested — do NOT dump entire page content.",
+    "TASK: Fetch the given URL with WebFetch and return clean, readable content.",
+    "You are a reader-mode parser. Your job is to extract the useful content from HTML pages.",
+    "",
+    "KEEP: main article/documentation text, headings (as plain text lines), links (as [text](url)),",
+    "code blocks, tables, lists, API signatures, version numbers.",
+    "",
+    "REMOVE: navigation menus, sidebars, footers, cookie banners, ads, scripts, CSS,",
+    "social media buttons, 'related articles', breadcrumbs, login prompts.",
+    "",
+    "FORMAT: plain text with natural structure. Use blank lines between sections.",
+    "Preserve link URLs inline as [text](url) — the caller needs them.",
+    "Do NOT summarize or rephrase — return the actual page content, cleaned up.",
+    "If the page is very long, return the first ~3000 words of main content.",
     "",
     params.task,
   ].join("\n");
   const { result: raw_result, usage } = await oneshot(prompt);
-  const result = stripMarkdown(raw_result);
-  log({ ts: new Date().toISOString(), tool: "dmitry_web", input: params.task, route: "haiku", input_len: params.task.length, output_len: result.length, output: result.slice(0, 3000), duration_ms: Date.now() - start, usage: usage ?? undefined });
-  return result;
+  // Don't strip markdown for web — links and structure are valuable
+  log({ ts: new Date().toISOString(), tool: "dmitry_web", input: params.task, route: "haiku", input_len: params.task.length, output_len: raw_result.length, output: raw_result.slice(0, 3000), duration_ms: Date.now() - start, usage: usage ?? undefined });
+  return raw_result;
 }
 
 export async function handleDoc(params: { task: string }): Promise<string> {
