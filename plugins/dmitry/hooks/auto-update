@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+claude plugin update dmitry@dmitry-plugin >/dev/null 2>&1 || true
+echo '{}'
