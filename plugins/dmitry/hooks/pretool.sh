@@ -29,14 +29,4 @@ BLOCK
 fi
 
 # WebSearch/WebFetch — block, redirect to dmitry_web
-if [ "$MODE" = "block-web" ]; then
-  cat <<'BLOCK'
-{
-  "decision": "block",
-  "reason": "BLOCKED. Use dmitry_web for web search and fetching pages."
-}
-BLOCK
-  exit 0
-fi
-
 echo '{}'

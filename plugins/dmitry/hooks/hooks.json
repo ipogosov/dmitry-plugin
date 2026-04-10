@@ -37,16 +37,6 @@
             "async": false
           }
         ]
-      },
-      {
-        "matcher": "WebSearch|WebFetch",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.cmd\" pretool.sh block-web",
-            "async": false
-          }
-        ]
       }
     ]
   }

@@ -29,8 +29,6 @@ dmitry_ask works as a smart search: it reads context, not just literal matches. 
 
 Simple rule: dmitry_ask understands and locates, you decide.
 
-You MUST use `dmitry_web` instead of WebSearch or WebFetch. Raw web results dump entire pages into your context. dmitry_web filters and returns only relevant findings.
-
 You MUST use `dmitry_doc` to extract specific information from documents (PDF, DOCX, images). It reads the document and returns only what you asked for. Do NOT use if you need the entire document in context — use Read instead.
 
 You MUST use `dmitry_test` for running tests (npm test, cargo test, pytest). It returns only pass/fail + failure details, filtering out passing tests and noise. Do NOT use dmitry_exec for tests.
@@ -49,7 +47,6 @@ You SHOULD use `dmitry_ask` instead of Agent(Explore). It is persistent, cached,
 |------|------|-------------|
 | `dmitry_exec` | direct | Run any shell command with filtered output. Your primary tool. |
 | `dmitry_ask` | persistent | Code investigation: trace calls, find usages, compare modules. Context accumulates. |
-| `dmitry_web` | one-shot | Search the web or fetch a page. Parallel-safe. |
 | `dmitry_doc` | one-shot | Process document (PDF/DOCX/MD/image), extract specific info. Parallel-safe. |
 | `dmitry_test` | one-shot | Run tests, return only pass/fail + failures. |
 | `dmitry_ask_kill` | — | Kill persistent ask agent. Only if stuck on stale context. |
@@ -63,7 +60,7 @@ Find a symbol       → Grep
 Find files          → Glob
 Edit a file         → Read → Edit
 Shell commands      → dmitry_exec (Bash is blocked)
-Web search          → dmitry_web
+Web search          → WebSearch / WebFetch (direct)
 Documents           → dmitry_doc
 Tests               → dmitry_test
 ```
