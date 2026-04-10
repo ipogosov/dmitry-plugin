@@ -6,7 +6,9 @@
   "scripts": {
     "build": "tsc",
     "bundle": "esbuild src/index.ts --bundle --platform=node --format=esm --minify --outfile=plugins/dmitry/server/dmitry.mjs --external:node:*",
-    "dev": "tsc --watch"
+    "dev:on": "./scripts/dev-toggle.sh on",
+    "dev:off": "./scripts/dev-toggle.sh off",
+    "dev:status": "./scripts/dev-toggle.sh status"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

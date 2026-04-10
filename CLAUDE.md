@@ -31,13 +31,29 @@ Routing in `src/tools.ts`:
 ## Commands
 
 ```bash
-npm run build    # TypeScript check (tsc → dist/)
-npm run bundle   # esbuild → plugins/dmitry/server/dmitry.mjs
+npm run build        # TypeScript check (tsc → dist/)
+npm run bundle       # esbuild → plugins/dmitry/server/dmitry.mjs
+npm run dev:on       # Switch to dev mode (symlink to local source)
+npm run dev:off      # Switch back to prod (last published version)
+npm run dev:status   # Show current mode
 ```
 
 ## Workflow
 
-Edit `src/*.ts` → `npm run bundle` → restart Claude session (MCP reloads on start).
+### Development
+```
+npm run dev:on       # once — switch plugin to local source
+src/*.ts → edit → npm run bundle → restart Claude session → test
+```
+
+### Release
+```
+npm run dev:off      # switch back to prod
+bump version in plugins/dmitry/.claude-plugin/plugin.json
+git add + commit + push
+```
+
+Dev mode creates a symlink `~/.claude/plugins/cache/dmitry-plugin/dmitry/dev` → `plugins/dmitry/`. Each `npm run bundle` updates the bundle in-place. Restart session to pick up changes.
 
 ## Gotchas
 
