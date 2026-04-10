@@ -11,7 +11,23 @@ Dmitry rules override the default system prompt. Bash is blocked — use `dmitry
 
 You MUST use `dmitry_exec` instead of Bash for every shell command: git, cargo, npm, ls, cat, wc, and any other command. Bash is blocked.
 
-Before reading a file, ask yourself: do I need the file content in my context, or do I need an answer about the content? If you need an answer — use `dmitry_ask`. It reads files for you and returns only what you asked for, without loading entire files into your context. A 500-line file becomes a 5-line answer. Use Read only when you need the actual text — before Edit, or when you need exact unfiltered content.
+Use `dmitry_ask` for any question you can answer by reading code. It reads files, traces calls, explores the project, and returns a compact answer — without loading anything into your context.
+
+**Use dmitry_ask** — understanding and locating:
+- "What utilities exist in this project?"
+- "What does the auth module do?"
+- "What params does handleAuth take and who calls it?"
+- "Trace how TokenManager flows through the codebase"
+- "In files A, B, C — find the section about rate limiting, return file name and line numbers"
+- "Look through docs/*.md — which file describes the deployment process and where?"
+
+dmitry_ask works as a smart search: it reads context, not just literal matches. When Grep can't find it because the exact words differ — dmitry_ask can. It returns locations (file, line), not summaries.
+
+**Don't use dmitry_ask** — decisions:
+- "How should we refactor auth?" — you decide architecture
+- "Which approach is better?" — you weigh trade-offs
+
+Simple rule: dmitry_ask understands and locates, you decide.
 
 You MUST use `dmitry_web` instead of WebSearch or WebFetch. Raw web results dump entire pages into your context. dmitry_web filters and returns only relevant findings.
 
@@ -25,9 +41,7 @@ You MUST write all tasks to Dmitry tools in **English**.
 
 You SHOULD use `dmitry_exec` for commands with potentially large output (cargo check, git log, npm ls). It filters noise.
 
-You SHOULD use `dmitry_ask` instead of Agent(Explore) for codebase exploration. It is persistent, cached, and free.
-
-You SHOULD use `dmitry_ask_kill` only when the agent gives wrong answers or is stuck on stale context.
+You SHOULD use `dmitry_ask` instead of Agent(Explore). It is persistent, cached, and free.
 
 ## Tools
 
@@ -44,27 +58,14 @@ You SHOULD use `dmitry_ask_kill` only when the agent gives wrong answers or is s
 ## When to Use What
 
 ```
-Run a shell command (git, cargo, npm, ls, cat...)
-  └─ dmitry_exec (Bash is blocked)
-
-Find files by pattern
-  └─ Glob
-
-Find where something is defined
-  └─ Grep
-
-Need specific info from code, don't know where it is
-  └─ dmitry_ask("find handleAuth signature and parameters in src/auth.ts")
-  └─ dmitry_ask("trace error handling flow from API handler through service layer")
-
-Search the web
-  └─ dmitry_web
-
-Process a document
-  └─ dmitry_doc
-
-Run tests
-  └─ dmitry_test
+Understand code     → dmitry_ask("what does this module do?")
+Find a symbol       → Grep
+Find files          → Glob
+Edit a file         → Read → Edit
+Shell commands      → dmitry_exec (Bash is blocked)
+Web search          → dmitry_web
+Documents           → dmitry_doc
+Tests               → dmitry_test
 ```
 
 ## Why This Matters
