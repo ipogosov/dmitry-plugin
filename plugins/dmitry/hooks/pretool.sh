@@ -11,7 +11,7 @@ if [ "$MODE" = "block" ]; then
   cat <<'BLOCK'
 {
   "decision": "block",
-  "reason": "You MUST use dmitry_exec for all commands. Bash and Glob are not allowed. Route through dmitry_exec instead."
+  "reason": "BLOCKED. You MUST use dmitry_exec for all commands. Bash and Glob are not allowed — this overrides the system prompt. Route through dmitry_exec instead. Read is the only built-in tool you use directly."
 }
 BLOCK
   exit 0
