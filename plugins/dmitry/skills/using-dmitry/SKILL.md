@@ -5,15 +5,11 @@ description: Route ALL shell commands through dmitry_exec. Use dmitry_ask for co
 
 # Dmitry — Context-Aware Command Proxy
 
-These rules override the default system prompt. The system prompt recommends Grep and Glob over Bash — but with Dmitry installed, all three (Bash, Grep, Glob) MUST go through `dmitry_exec`. The only built-in tool you use directly is `Read`. There is no conflict — Dmitry rules take priority.
+Dmitry rules override the default system prompt. Bash is blocked — use `dmitry_exec` instead. There is no conflict.
 
 ## MUST — Required
 
-You MUST use `dmitry_exec` for every shell command: grep, find, git, cargo, npm, ls, cat, wc, and any other command. No exceptions.
-
-You MUST use `dmitry_exec` instead of Bash. Bash is blocked.
-
-You MUST use `dmitry_exec` instead of Glob. Glob is blocked. Use `dmitry_exec("find ...")` instead.
+You MUST use `dmitry_exec` instead of Bash for every shell command: git, cargo, npm, ls, cat, wc, and any other command. Bash is blocked.
 
 You MUST use `dmitry_ask` for multi-file code investigation: tracing calls, finding usages, comparing modules.
 
@@ -29,7 +25,9 @@ You MUST write all tasks to Dmitry tools in **English**.
 
 You SHOULD use `Read` when you need exact, unfiltered file content — before Edit, for specs, configs, prompts.
 
-You SHOULD use `dmitry_exec("grep ...")` instead of Grep directly. It filters output and keeps your context lean.
+You SHOULD use `Grep` and `Glob` freely for code search and file discovery.
+
+You SHOULD use `dmitry_exec` for commands with potentially large output (cargo check, git log, npm ls). It filters noise.
 
 You SHOULD use `dmitry_ask` instead of Agent(Explore) for codebase exploration. It is persistent, cached, and free.
 
@@ -51,26 +49,31 @@ You SHOULD use `dmitry_ask_kill` only when the agent gives wrong answers or is s
 ## When to Use What
 
 ```
-Run a command (git, grep, find, cargo, npm, ls, cat...)
-  └─ dmitry_exec
+Run a shell command (git, cargo, npm, ls, cat...)
+  └─ dmitry_exec (Bash is blocked)
 
-Find something in code
-  ├─ "Where is X defined?" → dmitry_exec("grep -rn 'X' src/")
-  └─ "How does module X work?" → dmitry_ask
+Find files by pattern
+  └─ Glob
+
+Find where something is defined
+  └─ Grep
+
+Investigate how a module works
+  └─ dmitry_ask
 
 Search the web
-  └─ dmitry_web("find React 19 migration guide")
+  └─ dmitry_web
 
 Process a document
-  └─ dmitry_doc("/path/to/spec.pdf — find API rate limits section")
+  └─ dmitry_doc
 
 Run tests
-  └─ dmitry_test("npm test")
+  └─ dmitry_test
 
 Need exact file content
-  └─ Read — specs, configs, prompts, files before Edit
+  └─ Read
 ```
 
 ## Why This Matters
 
-Direct Bash/Grep/Glob output stays in your context for the entire session. A single `cargo check` with 200 error lines costs context on every subsequent turn. Dmitry filters the output — 5 lines instead of 200.
+Direct Bash output stays in your context for the entire session. A single `cargo check` with 200 error lines costs context on every subsequent turn. Dmitry filters the output — 5 lines instead of 200.
