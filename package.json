@@ -1,0 +1,20 @@
+{
+  "name": "dmitry-mcp",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "plugins/dmitry/server/dmitry.mjs",
+  "scripts": {
+    "build": "tsc",
+    "bundle": "esbuild src/index.ts --bundle --platform=node --format=esm --minify --outfile=plugins/dmitry/server/dmitry.mjs --external:node:*",
+    "dev": "tsc --watch"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.28.0",
+    "typescript": "^5.7.0"
+  }
+}
