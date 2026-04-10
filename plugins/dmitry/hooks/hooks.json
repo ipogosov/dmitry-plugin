@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "rm -f /tmp/dmitry-pretool-state",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.cmd\" session-start",
             "async": false
           }
         ]
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/pretool.sh\"",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.cmd\" pretool.sh",
             "async": false
           }
         ]

@@ -4,7 +4,7 @@ set -euo pipefail
 # Bypass for Dmitry's internal CLI processes (research agent)
 [ -n "${DMITRY_INTERNAL:-}" ] && echo '{}' && exit 0
 
-STATE_FILE="/tmp/dmitry-pretool-state"
+STATE_FILE="${TMPDIR:-${TEMP:-/tmp}}/dmitry-pretool-state"
 PLUGIN_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 # Read counter (0 if file doesn't exist)
