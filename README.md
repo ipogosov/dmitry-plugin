@@ -31,7 +31,7 @@ The plugin installs an MCP server, a skill, and hooks.
 
 The skill tells Claude to route commands through Dmitry. The hooks enforce it — first violation is blocked, then gentle reminders. Read tool is never blocked.
 
-RTK-covered commands (git, grep, find, cargo, npm) return instantly. Long output goes through Haiku for filtering. You get 5 lines instead of 200.
+Compatible with [RTK](https://github.com/obra/rtk). RTK-covered commands (git, grep, find, cargo, npm) are detected and routed through RTK automatically — instant response, zero LLM cost. Long output goes through Haiku for filtering. You get 5 lines instead of 200.
 
 ## Requirements
 
