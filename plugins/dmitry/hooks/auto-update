@@ -1,5 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Skip auto-update in dev mode (symlink exists = dev active)
+CACHE_DIR="$HOME/.claude/plugins/cache/dmitry-plugin/dmitry"
+if [ -L "$CACHE_DIR/dev" ] && node -e "
+  const d = require('$HOME/.claude/plugins/installed_plugins.json');
+  const p = d.plugins['dmitry@dmitry-plugin']?.[0]?.installPath || '';
+  process.exit(p.endsWith('/dev') ? 0 : 1);
+" 2>/dev/null; then
+  echo '{}'
+  exit 0
+fi
+
 claude plugin update dmitry@dmitry-plugin >/dev/null 2>&1 || true
 echo '{}'
