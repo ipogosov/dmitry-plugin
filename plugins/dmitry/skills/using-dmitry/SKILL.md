@@ -1,6 +1,6 @@
 ---
 name: using-dmitry
-description: Route ALL shell commands through dmitry_exec, use dmitry_research for LLM reasoning, use Read for exact file content. Keeps context lean.
+description: Route ALL shell commands through dmitry_exec. Use dmitry_ask for code investigation, dmitry_web for search, dmitry_doc for documents, dmitry_test for tests, Read for exact file content.
 ---
 
 # Dmitry — Context-Aware Command Proxy
@@ -15,32 +15,38 @@ This is not optional. Every direct Bash call dumps raw output into your context 
 
 ## Tools
 
-| Tool | What it does | When to use |
-|------|-------------|-------------|
-| `dmitry_exec` | Runs any shell command with filtered output | ANY command: grep, git, find, cargo, npm, cat, ls. Your primary tool. |
-| `dmitry_research` | Persistent Haiku agent with full MCP access | When you need LLM reasoning: trace code, analyze architecture, compare modules, diagnose errors. Context accumulates — do NOT kill between tasks. |
-| `dmitry_research_kill` | Kills research agent | Only if research gives wrong answers from stale context. |
-| `dmitry_stats` | Usage statistics | Call counts, token consumption, cost comparison. |
-| `Read` | Read exact file content | Before Edit. Reading specs, configs, docs you need to fully understand. Any time you need raw unfiltered content. |
+| Tool | Type | What it does |
+|------|------|-------------|
+| `dmitry_exec` | direct | Run any shell command with filtered output. Your primary tool. |
+| `dmitry_ask` | persistent | Code investigation: trace calls, find usages, compare modules. Context accumulates across calls. |
+| `dmitry_web` | one-shot | Search the web or fetch a page. Parallel-safe. |
+| `dmitry_doc` | one-shot | Process document (PDF/DOCX/MD/image), extract specific info. Parallel-safe. |
+| `dmitry_test` | one-shot | Run tests, return only pass/fail + failures. |
+| `dmitry_ask_kill` | — | Kill persistent ask agent. Only if stuck on stale context. |
+| `dmitry_stats` | — | Usage statistics and cost comparison. |
+| `Read` | built-in | Read exact file content. Before Edit, or when you need full unfiltered content. |
 
 ## When to Use What
 
 ```
 Run a command (git, grep, find, cargo, npm, ls, cat...)
-  └─ dmitry_exec — always
+  └─ dmitry_exec
 
 Find something in code
   ├─ "Where is X defined?" → dmitry_exec("grep -rn 'X' src/")
-  └─ "How does module X work?" → dmitry_research
+  └─ "How does module X work?" → dmitry_ask
 
-Need to understand a document fully
-  └─ Read — specs, configs, prompts, memory files
+Search the web
+  └─ dmitry_web("find React 19 migration guide")
 
-Need exact file content before editing
-  └─ Read — then Edit
+Process a document
+  └─ dmitry_doc("/path/to/spec.pdf", "find API rate limits section")
 
-Need LLM to reason across multiple files
-  └─ dmitry_research
+Run tests
+  └─ dmitry_test("npm test")
+
+Need exact file content
+  └─ Read — specs, configs, prompts, files before Edit
 ```
 
 ## Red Flags — Stop and Rethink
@@ -51,8 +57,10 @@ Need LLM to reason across multiple files
 | Call Grep directly | dmitry_exec("grep ...") |
 | Call Glob directly | dmitry_exec("find ...") |
 | Use `cat` to read a file for editing | Read |
-| Send repeated exec calls exploring blindly | dmitry_research — one task, full answer |
-| Read a large file just to find one thing | dmitry_exec("grep ...") or dmitry_research |
+| Search the web via Bash curl | dmitry_web |
+| Read a PDF to find one section | dmitry_doc |
+| Run tests via dmitry_exec | dmitry_test — filters noise |
+| Ask dmitry_ask to "recommend" or "decide" | Think yourself — ask gathers data, you decide |
 
 ## Why This Matters
 
