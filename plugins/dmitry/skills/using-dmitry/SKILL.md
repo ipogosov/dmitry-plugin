@@ -5,20 +5,40 @@ description: Route ALL shell commands through dmitry_exec. Use dmitry_ask for co
 
 # Dmitry — Context-Aware Command Proxy
 
-<EXTREMELY-IMPORTANT>
-NEVER use Bash, Grep, or Glob tools directly. Route ALL commands through dmitry_exec.
+## MUST — Required
 
-Read tool is the ONLY exception — use it freely when you need exact file content.
+You MUST use `dmitry_exec` for every shell command: grep, find, git, cargo, npm, ls, cat, wc, and any other command. No exceptions.
 
-This is not optional. Every direct Bash call dumps raw output into your context for the rest of the session.
-</EXTREMELY-IMPORTANT>
+You MUST use `dmitry_exec` instead of Bash. Bash is blocked.
+
+You MUST use `dmitry_exec` instead of Glob. Glob is blocked. Use `dmitry_exec("find ...")` instead.
+
+You MUST use `dmitry_ask` for multi-file code investigation: tracing calls, finding usages, comparing modules.
+
+You MUST use `dmitry_web` for web searches and fetching pages.
+
+You MUST use `dmitry_doc` for processing documents (PDF, DOCX, images). Do NOT use if you need the entire document — data loss possible.
+
+You MUST use `dmitry_test` for running tests instead of `dmitry_exec`.
+
+You MUST write all tasks to Dmitry tools in **English**.
+
+## SHOULD — Recommended
+
+You SHOULD use `Read` when you need exact, unfiltered file content — before Edit, for specs, configs, prompts.
+
+You SHOULD use `dmitry_exec("grep ...")` instead of Grep directly. It filters output and keeps your context lean.
+
+You SHOULD use `dmitry_ask` instead of Agent(Explore) for codebase exploration. It is persistent, cached, and free.
+
+You SHOULD use `dmitry_ask_kill` only when the agent gives wrong answers or is stuck on stale context.
 
 ## Tools
 
 | Tool | Type | What it does |
 |------|------|-------------|
 | `dmitry_exec` | direct | Run any shell command with filtered output. Your primary tool. |
-| `dmitry_ask` | persistent | Code investigation: trace calls, find usages, compare modules. Context accumulates across calls. |
+| `dmitry_ask` | persistent | Code investigation: trace calls, find usages, compare modules. Context accumulates. |
 | `dmitry_web` | one-shot | Search the web or fetch a page. Parallel-safe. |
 | `dmitry_doc` | one-shot | Process document (PDF/DOCX/MD/image), extract specific info. Parallel-safe. |
 | `dmitry_test` | one-shot | Run tests, return only pass/fail + failures. |
@@ -40,7 +60,7 @@ Search the web
   └─ dmitry_web("find React 19 migration guide")
 
 Process a document
-  └─ dmitry_doc("/path/to/spec.pdf", "find API rate limits section")
+  └─ dmitry_doc("/path/to/spec.pdf — find API rate limits section")
 
 Run tests
   └─ dmitry_test("npm test")
@@ -49,23 +69,6 @@ Need exact file content
   └─ Read — specs, configs, prompts, files before Edit
 ```
 
-## Red Flags — Stop and Rethink
-
-| You're about to... | Do this instead |
-|---------------------|----------------|
-| Call Bash directly | dmitry_exec |
-| Call Grep directly | dmitry_exec("grep ...") |
-| Call Glob directly | dmitry_exec("find ...") |
-| Use `cat` to read a file for editing | Read |
-| Search the web via Bash curl | dmitry_web |
-| Read a PDF to find one section | dmitry_doc |
-| Run tests via dmitry_exec | dmitry_test — filters noise |
-| Ask dmitry_ask to "recommend" or "decide" | Think yourself — ask gathers data, you decide |
-
 ## Why This Matters
 
-Direct Bash/Grep output stays in your context for the entire session. A single `cargo check` with 200 error lines costs context on every subsequent turn. Dmitry filters the output — 5 lines instead of 200.
-
-## Language
-
-Always write tasks to Dmitry in **English**. Output goes to another LLM, not a human.
+Direct Bash/Grep/Glob output stays in your context for the entire session. A single `cargo check` with 200 error lines costs context on every subsequent turn. Dmitry filters the output — 5 lines instead of 200.

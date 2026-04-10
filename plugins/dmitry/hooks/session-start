@@ -2,5 +2,6 @@
 set -euo pipefail
 
 STATE_FILE="${TMPDIR:-${TEMP:-/tmp}}/dmitry-pretool-state"
-rm -f "$STATE_FILE"
+GREP_STATE="${TMPDIR:-${TEMP:-/tmp}}/dmitry-pretool-grep-state"
+rm -f "$STATE_FILE" "$GREP_STATE"
 echo '{}'

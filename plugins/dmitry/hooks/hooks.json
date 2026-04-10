@@ -14,11 +14,21 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Bash|Grep|Glob",
+        "matcher": "Bash|Glob",
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.cmd\" pretool.sh",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.cmd\" pretool.sh block",
+            "async": false
+          }
+        ]
+      },
+      {
+        "matcher": "Grep",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.cmd\" pretool.sh remind",
             "async": false
           }
         ]
