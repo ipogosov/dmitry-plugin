@@ -50,7 +50,15 @@ export interface OneshotResult {
   usage: Usage | null;
 }
 
-export function oneshot(task: string, timeout: number = 180_000): Promise<OneshotResult> {
+export interface OneshotOptions {
+  timeout?: number;
+  systemPrompt?: string;
+}
+
+export function oneshot(task: string, opts: OneshotOptions | number = {}): Promise<OneshotResult> {
+  const { timeout = 180_000, systemPrompt = SYSTEM_PROMPT } =
+    typeof opts === "number" ? { timeout: opts } : opts;
+
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     const child = spawn(
@@ -66,7 +74,7 @@ export function oneshot(task: string, timeout: number = 180_000): Promise<Onesho
         "--disable-slash-commands",
         "--add-dir", process.cwd(),
         ...(process.env.DMITRY_WORK_DIR ? ["--add-dir", process.env.DMITRY_WORK_DIR] : []),
-        "--append-system-prompt", SYSTEM_PROMPT,
+        "--append-system-prompt", systemPrompt,
         "--verbose",
         "--allowedTools", "WebSearch,WebFetch",
       ],
