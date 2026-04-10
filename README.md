@@ -35,6 +35,7 @@ Compatible with [RTK](https://github.com/obra/rtk). RTK-covered commands (git, g
 
 ## Requirements
 
-- Claude Code CLI
-- Node.js 18+
-- Windows: Git for Windows (for bash in hooks)
+- **Claude Code CLI** (Max subscription or API key)
+- **Node.js 18+**
+- **RTK** — optional but recommended. Without it, commands still work but skip instant-routing
+- **Windows**: Git for Windows (for bash in hooks)
