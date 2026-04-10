@@ -92,25 +92,42 @@ export async function handleAsk(
 
 export async function handleWeb(params: { task: string }): Promise<string> {
   const start = Date.now();
-  const prompt = [
-    "TASK: Fetch the given URL with WebFetch and return clean, readable content.",
-    "You are a reader-mode parser. Your job is to extract the useful content from HTML pages.",
-    "",
-    "KEEP: main article/documentation text, headings (as plain text lines), links (as [text](url)),",
-    "code blocks, tables, lists, API signatures, version numbers.",
-    "",
-    "REMOVE: navigation menus, sidebars, footers, cookie banners, ads, scripts, CSS,",
-    "social media buttons, 'related articles', breadcrumbs, login prompts.",
-    "",
-    "FORMAT: plain text with natural structure. Use blank lines between sections.",
-    "Preserve link URLs inline as [text](url) — the caller needs them.",
-    "Do NOT summarize or rephrase — return the actual page content, cleaned up.",
-    "If the page is very long, return the first ~3000 words of main content.",
-    "",
-    params.task,
-  ].join("\n");
+  const isUrl = /^https?:\/\//i.test(params.task.trim());
+
+  const prompt = isUrl
+    ? [
+        "TASK: Fetch this URL with WebFetch and return clean, readable content.",
+        "You are a reader-mode parser. Extract useful content from the HTML page.",
+        "",
+        "KEEP: main article/documentation text, headings (as plain text lines), links (as [text](url)),",
+        "code blocks, tables, lists, API signatures, version numbers.",
+        "",
+        "REMOVE: navigation menus, sidebars, footers, cookie banners, ads, scripts, CSS,",
+        "social media buttons, 'related articles', breadcrumbs, login prompts.",
+        "",
+        "FORMAT: plain text with natural structure. Use blank lines between sections.",
+        "Preserve link URLs inline as [text](url) — the caller needs them.",
+        "Do NOT summarize or rephrase — return the actual page content, cleaned up.",
+        "If the page is very long, return the first ~3000 words of main content.",
+        "",
+        params.task,
+      ].join("\n")
+    : [
+        "TASK: Search the web for the query below using WebSearch.",
+        "Then fetch the most relevant 1-2 pages with WebFetch.",
+        "Return the CLEAN CONTENT of those pages — not a summary, not bullet points.",
+        "",
+        "For each page, return:",
+        "SOURCE: [url]",
+        "Then the cleaned page content (reader mode — no HTML noise, keep text/links/tables).",
+        "",
+        "Do NOT summarize or rephrase. Return actual content from the pages.",
+        "If a page is long, return the most relevant ~2000 words.",
+        "",
+        params.task,
+      ].join("\n");
+
   const { result: raw_result, usage } = await oneshot(prompt);
-  // Don't strip markdown for web — links and structure are valuable
   log({ ts: new Date().toISOString(), tool: "dmitry_web", input: params.task, route: "haiku", input_len: params.task.length, output_len: raw_result.length, output: raw_result.slice(0, 3000), duration_ms: Date.now() - start, usage: usage ?? undefined });
   return raw_result;
 }

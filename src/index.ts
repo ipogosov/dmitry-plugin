@@ -83,14 +83,13 @@ server.tool(
 server.tool(
   "dmitry_web",
   [
-    "Fetch a URL and return clean, readable content (reader mode). One-shot, parallel-safe.",
-    "Strips HTML noise: navigation, ads, footers, scripts. Keeps: article text, headings, links, code, tables.",
-    "Use AFTER WebSearch to clean up pages from search results.",
-    "Workflow: you run WebSearch → get URLs → dmitry_web(url) → clean content → reason about it.",
-    "Do NOT use for searching — use WebSearch directly. This tool is for page content extraction.",
+    "Fetch a URL or search the web — returns clean page content (reader mode), not summaries.",
+    "URL input: fetches page, strips HTML noise, returns readable text with links.",
+    "Query input: searches the web, fetches top results, returns their clean content.",
+    "Parallel-safe. Returns actual page content, not bullet-point summaries.",
   ].join(" "),
   {
-    task: z.string().describe("URL to fetch and clean. English only."),
+    task: z.string().describe("URL to fetch or search query. English only."),
   },
   async ({ task }) => {
     const start = Date.now();
