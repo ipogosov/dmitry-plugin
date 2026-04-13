@@ -1,14 +1,15 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { IS_WIN, buildRtkSettings } from "./platform.js";
+import { IS_WIN, buildRtkSettings, EMPTY_PLUGIN_DIR } from "./platform.js";
 import { extractUsage, type Usage } from "./logger.js";
 
 const RTK_SETTINGS = buildRtkSettings();
 
-// No --tools restriction: persistent agent handles diverse tasks
-// (code investigation, images, e2e tests, document search, MCP servers).
-// Only block self-recursion and archivist.
+// Minimal tool set for data gathering: read files, search, run commands.
+// Web research belongs in dmitry_web; nested Agent spawns are disallowed on purpose.
+const ASK_TOOLS = "Read,Grep,Glob,Bash";
+
 const DISALLOWED_TOOLS = [
   "mcp__dmitry__dmitry_exec",
   "mcp__dmitry__dmitry_ask",
@@ -131,14 +132,17 @@ export class CliManager {
         "--output-format",
         "stream-json",
         "--verbose",
+        "--setting-sources", "",
         "--settings", RTK_SETTINGS,
+        "--plugin-dir", EMPTY_PLUGIN_DIR,
+        "--tools", ASK_TOOLS,
         "--disallowed-tools", DISALLOWED_TOOLS,
         "--disable-slash-commands",
         "--add-dir", process.cwd(),
         "--add-dir", join(homedir(), "Work"),
         "--append-system-prompt",
         SYSTEM_PROMPT,
-        "--allowedTools", "WebSearch,WebFetch",
+        "--allowedTools", ASK_TOOLS,
       ],
       {
         cwd: process.cwd(),

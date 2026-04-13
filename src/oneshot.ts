@@ -1,10 +1,8 @@
 import { spawn } from "node:child_process";
-import { IS_WIN, buildRtkSettings } from "./platform.js";
+import { IS_WIN, buildRtkSettings, EMPTY_PLUGIN_DIR } from "./platform.js";
 import { extractUsage, type Usage } from "./logger.js";
 
 const RTK_SETTINGS = buildRtkSettings();
-
-const TOOLS = "Read,Grep,Glob,Bash,LS,Agent,WebSearch,WebFetch";
 
 const DISALLOWED_TOOLS = [
   "mcp__dmitry__dmitry_exec",
@@ -53,11 +51,19 @@ export interface OneshotResult {
 export interface OneshotOptions {
   timeout?: number;
   systemPrompt?: string;
+  // Comma-separated whitelist of built-in tools. Pass "" for pure text filter
+  // (exec/test) to drop all tool schemas from the prefix (~12k tokens).
+  tools?: string;
+  // If true, replace Claude Code's default system prompt entirely via --system-prompt
+  // (instead of appending to it). Drops another ~6k tokens but loses CC's built-in
+  // tool-use protocol, so only safe for roles that pass tools="" (pure text filters).
+  replaceSystemPrompt?: boolean;
 }
 
 export function oneshot(task: string, opts: OneshotOptions | number = {}): Promise<OneshotResult> {
-  const { timeout = 180_000, systemPrompt = SYSTEM_PROMPT } =
+  const { timeout = 180_000, systemPrompt = SYSTEM_PROMPT, tools = "", replaceSystemPrompt = false } =
     typeof opts === "number" ? { timeout: opts } : opts;
+  const sysFlag = replaceSystemPrompt ? "--system-prompt" : "--append-system-prompt";
 
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
@@ -69,14 +75,15 @@ export function oneshot(task: string, opts: OneshotOptions | number = {}): Promi
         "--model", "haiku",
         "--setting-sources", "",
         "--settings", RTK_SETTINGS,
-        "--tools", TOOLS,
+        "--plugin-dir", EMPTY_PLUGIN_DIR,
+        "--tools", tools,
         "--disallowed-tools", DISALLOWED_TOOLS,
         "--disable-slash-commands",
         "--add-dir", process.cwd(),
         ...(process.env.DMITRY_WORK_DIR ? ["--add-dir", process.env.DMITRY_WORK_DIR] : []),
-        "--append-system-prompt", systemPrompt,
+        sysFlag, systemPrompt,
         "--verbose",
-        "--allowedTools", "WebSearch,WebFetch",
+        "--allowedTools", tools,
       ],
       {
         cwd: process.cwd(),

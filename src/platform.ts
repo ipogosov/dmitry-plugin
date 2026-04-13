@@ -1,8 +1,14 @@
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
 export const IS_WIN = process.platform === "win32";
+
+// Empty plugin dir used as a whitelist override: passing this to
+// `claude --plugin-dir` stops CC from loading default plugin dirs,
+// which otherwise inject ~1.6k tokens of plugin descriptions per spawn.
+export const EMPTY_PLUGIN_DIR = join(homedir(), ".dmitry", "empty-plugins");
+mkdirSync(EMPTY_PLUGIN_DIR, { recursive: true });
 
 export function shellArgs(command: string): [string, string[]] {
   return IS_WIN

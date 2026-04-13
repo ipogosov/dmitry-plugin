@@ -1,7 +1,7 @@
 {
   "name": "dmitry",
   "description": "MCP proxy that routes all shell commands through filtered output, keeping your context window lean",
-  "version": "0.10.1",
+  "version": "0.10.2",
   "author": {
     "name": "Ivan Pogosov"
   },

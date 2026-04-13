@@ -88,7 +88,7 @@ export async function handleExec(
     raw,
   ].join("\n");
 
-  const { result: raw_result, usage } = await oneshot(prompt, { timeout: timeout ?? 60_000, systemPrompt: FILTER_SYSTEM_PROMPT });
+  const { result: raw_result, usage } = await oneshot(prompt, { timeout: timeout ?? 60_000, systemPrompt: FILTER_SYSTEM_PROMPT, tools: "", replaceSystemPrompt: true });
   const result = stripMarkdown(raw_result);
   log({ ts: new Date().toISOString(), tool: "dmitry_exec", input: command, route: "haiku", input_len: command.length, raw_len: raw.length, output_len: result.length, exit_code: exitCode, output: result.slice(0, 3000), duration_ms: Date.now() - start, usage: usage ?? undefined });
   return result;
@@ -160,7 +160,7 @@ export async function handleWeb(params: { task: string }): Promise<string> {
     params.task,
   ].join("\n");
 
-  const { result: raw_result, usage } = await oneshot(prompt, { systemPrompt: WEB_SYSTEM_PROMPT });
+  const { result: raw_result, usage } = await oneshot(prompt, { systemPrompt: WEB_SYSTEM_PROMPT, tools: "WebSearch,WebFetch" });
   log({ ts: new Date().toISOString(), tool: "dmitry_web", input: params.task, route: "haiku", input_len: params.task.length, output_len: raw_result.length, output: raw_result.slice(0, 3000), duration_ms: Date.now() - start, usage: usage ?? undefined });
   return raw_result;
 }
@@ -175,7 +175,7 @@ export async function handleDoc(params: { task: string }): Promise<string> {
     "",
     params.task,
   ].join("\n");
-  const { result: raw_result, usage } = await oneshot(prompt, 180_000);
+  const { result: raw_result, usage } = await oneshot(prompt, { timeout: 180_000, tools: "Read,Grep,Glob,WebFetch" });
   const result = stripMarkdown(raw_result);
   log({ ts: new Date().toISOString(), tool: "dmitry_doc", input: params.task, route: "haiku", input_len: params.task.length, output_len: result.length, output: result.slice(0, 3000), duration_ms: Date.now() - start, usage: usage ?? undefined });
   return result;
@@ -201,7 +201,7 @@ export async function handleTest(params: { command: string; timeout?: number }):
     "",
     raw,
   ].join("\n");
-  const { result: raw_result, usage } = await oneshot(prompt, { timeout: params.timeout ?? 120_000, systemPrompt: FILTER_SYSTEM_PROMPT });
+  const { result: raw_result, usage } = await oneshot(prompt, { timeout: params.timeout ?? 120_000, systemPrompt: FILTER_SYSTEM_PROMPT, tools: "", replaceSystemPrompt: true });
   const result = stripMarkdown(raw_result);
   log({ ts: new Date().toISOString(), tool: "dmitry_test", input: params.command, route: "haiku", input_len: params.command.length, raw_len: raw.length, output_len: result.length, exit_code: exitCode, output: result.slice(0, 3000), duration_ms: Date.now() - start, usage: usage ?? undefined });
   return result;
