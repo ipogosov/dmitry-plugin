@@ -22,7 +22,7 @@ interface LogEntry {
   session: string;
   tool: "dmitry_exec" | "dmitry_ask" | "dmitry_ask_kill" | "dmitry_web" | "dmitry_doc" | "dmitry_test";
   input: string;
-  route: "rtk" | "short" | "haiku";
+  route: "rtk" | "short" | "haiku" | "config";
   input_len: number;
   raw_len?: number;      // exec haiku route: raw output length before filtering
   output_len: number;

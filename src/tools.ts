@@ -4,6 +4,53 @@ import { execFile } from "node:child_process";
 import { oneshot } from "./oneshot.js";
 import { log } from "./logger.js";
 import { IS_WIN } from "./platform.js";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
+const GLOBAL_CLAUDE_MD = join(homedir(), ".claude", "CLAUDE.md");
+const DMITRY_DIR = join(homedir(), ".dmitry");
+const RTK_MD_DECISION = join(DMITRY_DIR, "rtk-md-decision.json");
+const RTK_IMPORT_RE = /^@RTK\.md\s*\r?\n?/m;
+
+let rtkBannerChecked = false;
+
+function maybeRtkBanner(): string {
+  if (rtkBannerChecked) return "";
+  rtkBannerChecked = true;
+  if (existsSync(RTK_MD_DECISION)) return "";
+  try {
+    const content = readFileSync(GLOBAL_CLAUDE_MD, "utf8");
+    if (!RTK_IMPORT_RE.test(content)) return "";
+  } catch {
+    return "";
+  }
+  return [
+    "[dmitry] @RTK.md is imported in ~/.claude/CLAUDE.md — redundant when Dmitry is active (~500 tokens/session).",
+    'Decide once: dmitry_exec "dmitry-config rtk-md=remove" | rtk-md=keep   (remove strips the line; RTK may re-add on upgrade)',
+    "───",
+    "",
+  ].join("\n");
+}
+
+function handleConfigCommand(command: string): string | null {
+  const m = command.trim().match(/^dmitry-config rtk-md=(remove|keep)$/);
+  if (!m) return null;
+  const choice = m[1];
+  mkdirSync(DMITRY_DIR, { recursive: true });
+  writeFileSync(RTK_MD_DECISION, JSON.stringify({ rtk_md: choice, ts: new Date().toISOString() }) + "\n");
+  if (choice === "remove") {
+    try {
+      const content = readFileSync(GLOBAL_CLAUDE_MD, "utf8");
+      if (!RTK_IMPORT_RE.test(content)) return "Decision saved: rtk-md=remove. No @RTK.md line found to strip.";
+      writeFileSync(GLOBAL_CLAUDE_MD, content.replace(RTK_IMPORT_RE, ""));
+      return "Removed @RTK.md from ~/.claude/CLAUDE.md. Decision saved.";
+    } catch (e) {
+      return `Decision saved but edit failed: ${(e as Error).message}`;
+    }
+  }
+  return "Decision saved: rtk-md=keep. This banner will not appear again.";
+}
 
 // Strip markdown formatting from Haiku output.
 // Haiku's base system prompt encourages markdown; we remove it deterministically
@@ -60,12 +107,18 @@ export async function handleExec(
   const { command, timeout } = params;
   const start = Date.now();
 
+  const configReply = handleConfigCommand(command);
+  if (configReply !== null) {
+    log({ ts: new Date().toISOString(), tool: "dmitry_exec", input: command, route: "config", input_len: command.length, output_len: configReply.length, duration_ms: Date.now() - start });
+    return configReply;
+  }
+
   // Check RTK first — if covered, run through RTK directly (no double execution)
   const rtkCmd = await rtkRewrite(command);
   if (rtkCmd) {
     const { output: result, exitCode } = await execCommand(rtkCmd, timeout ?? 60_000);
     log({ ts: new Date().toISOString(), tool: "dmitry_exec", input: command, route: "rtk", input_len: command.length, output_len: result.length, exit_code: exitCode, rtk_cmd: rtkCmd, output: result.slice(0, 1000), duration_ms: Date.now() - start });
-    return result;
+    return maybeRtkBanner() + result;
   }
 
   // RTK doesn't cover — run raw
@@ -75,7 +128,7 @@ export async function handleExec(
   // Short output — return as-is
   if (lineCount < 10) {
     log({ ts: new Date().toISOString(), tool: "dmitry_exec", input: command, route: "short", input_len: command.length, output_len: raw.length, exit_code: exitCode, output: raw.slice(0, 1000), duration_ms: Date.now() - start });
-    return raw;
+    return maybeRtkBanner() + raw;
   }
 
   // Long output, no RTK — send to oneshot Haiku for filtering
@@ -91,7 +144,7 @@ export async function handleExec(
   const { result: raw_result, usage } = await oneshot(prompt, { timeout: timeout ?? 60_000, systemPrompt: FILTER_SYSTEM_PROMPT, tools: "", replaceSystemPrompt: true });
   const result = stripMarkdown(raw_result);
   log({ ts: new Date().toISOString(), tool: "dmitry_exec", input: command, route: "haiku", input_len: command.length, raw_len: raw.length, output_len: result.length, exit_code: exitCode, output: result.slice(0, 3000), duration_ms: Date.now() - start, usage: usage ?? undefined });
-  return result;
+  return maybeRtkBanner() + result;
 }
 
 export async function handleAsk(
@@ -102,7 +155,7 @@ export async function handleAsk(
   const { result: raw_result, usage } = await cli.send(params.task);
   const result = stripMarkdown(raw_result);
   log({ ts: new Date().toISOString(), tool: "dmitry_ask", input: params.task, route: "haiku", input_len: params.task.length, output_len: result.length, output: result.slice(0, 3000), duration_ms: Date.now() - start, usage: usage ?? undefined });
-  return result;
+  return maybeRtkBanner() + result;
 }
 
 const WEB_SYSTEM_PROMPT = [
@@ -162,7 +215,7 @@ export async function handleWeb(params: { task: string }): Promise<string> {
 
   const { result: raw_result, usage } = await oneshot(prompt, { systemPrompt: WEB_SYSTEM_PROMPT, tools: "WebSearch,WebFetch" });
   log({ ts: new Date().toISOString(), tool: "dmitry_web", input: params.task, route: "haiku", input_len: params.task.length, output_len: raw_result.length, output: raw_result.slice(0, 3000), duration_ms: Date.now() - start, usage: usage ?? undefined });
-  return raw_result;
+  return maybeRtkBanner() + raw_result;
 }
 
 export async function handleDoc(params: { task: string }): Promise<string> {
@@ -178,7 +231,7 @@ export async function handleDoc(params: { task: string }): Promise<string> {
   const { result: raw_result, usage } = await oneshot(prompt, { timeout: 180_000, tools: "Read,Grep,Glob,WebFetch" });
   const result = stripMarkdown(raw_result);
   log({ ts: new Date().toISOString(), tool: "dmitry_doc", input: params.task, route: "haiku", input_len: params.task.length, output_len: result.length, output: result.slice(0, 3000), duration_ms: Date.now() - start, usage: usage ?? undefined });
-  return result;
+  return maybeRtkBanner() + result;
 }
 
 export async function handleTest(params: { command: string; timeout?: number }): Promise<string> {
@@ -189,7 +242,7 @@ export async function handleTest(params: { command: string; timeout?: number }):
   // Short output — return as-is
   if (lineCount < 20) {
     log({ ts: new Date().toISOString(), tool: "dmitry_test", input: params.command, route: "short", input_len: params.command.length, output_len: raw.length, exit_code: exitCode, duration_ms: Date.now() - start });
-    return raw;
+    return maybeRtkBanner() + raw;
   }
 
   // Long output — filter through Haiku, keep only failures
@@ -204,7 +257,7 @@ export async function handleTest(params: { command: string; timeout?: number }):
   const { result: raw_result, usage } = await oneshot(prompt, { timeout: params.timeout ?? 120_000, systemPrompt: FILTER_SYSTEM_PROMPT, tools: "", replaceSystemPrompt: true });
   const result = stripMarkdown(raw_result);
   log({ ts: new Date().toISOString(), tool: "dmitry_test", input: params.command, route: "haiku", input_len: params.command.length, raw_len: raw.length, output_len: result.length, exit_code: exitCode, output: result.slice(0, 3000), duration_ms: Date.now() - start, usage: usage ?? undefined });
-  return result;
+  return maybeRtkBanner() + result;
 }
 
 export function handleAskKill(cli: CliManager): string {
