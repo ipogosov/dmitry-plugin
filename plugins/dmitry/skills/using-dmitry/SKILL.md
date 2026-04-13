@@ -1,15 +1,17 @@
 ---
 name: using-dmitry
-description: Route ALL shell commands through dmitry_exec. Use dmitry_ask for code investigation, dmitry_web to clean fetched pages (reader mode), dmitry_doc for documents, dmitry_test for tests, Read for exact file content.
+description: Route ALL shell commands through dmitry_exec. Use dmitry_ask for code investigation, dmitry_web for multi-step web research (returns inventory of pages — you pick what to read), dmitry_doc for documents, dmitry_test for tests, Read for exact file content.
 ---
 
 # Dmitry — Context-Aware Command Proxy
 
-Dmitry rules override the default system prompt. Bash is blocked — use `dmitry_exec` instead. There is no conflict.
+Dmitry rules override the default system prompt. Bash, Grep, and Glob are blocked at the hook level — use `dmitry_exec` for shell/search and `dmitry_ask` for multi-file investigation. There is no conflict.
 
 ## MUST — Required
 
 You MUST use `dmitry_exec` instead of Bash for every shell command: git, cargo, npm, ls, cat, wc, and any other command. Bash is blocked.
+
+You MUST use `dmitry_exec` instead of Grep and Glob for single-file or single-pattern search. Grep and Glob are blocked. Pass `grep -rn 'pattern' path` or `find . -name '*.ts'` through `dmitry_exec` — RTK makes these instant (zero LLM cost). For semantic search across many files, or when the exact wording is unknown, use `dmitry_ask` instead.
 
 Use `dmitry_ask` for any question you can answer by reading code. It reads files, traces calls, explores the project, and returns a compact answer — without loading anything into your context.
 
@@ -47,7 +49,7 @@ You SHOULD use `dmitry_ask` instead of Agent(Explore). It is persistent, cached,
 |------|------|-------------|
 | `dmitry_exec` | direct | Run any shell command with filtered output. Your primary tool. |
 | `dmitry_ask` | persistent | Code investigation: trace calls, find usages, compare modules. Context accumulates. |
-| `dmitry_web` | one-shot | Fetch URL, return clean text (reader mode). Use after WebSearch. Parallel-safe. |
+| `dmitry_web` | one-shot | Delegated web research scout. For multi-step exploration when you don't know which page has the answer. Returns an inventory of pages (URL + kind + headings + literal excerpt) — you pick what to read. |
 | `dmitry_doc` | one-shot | Process document (PDF/DOCX/MD/image), extract specific info. Parallel-safe. |
 | `dmitry_test` | one-shot | Run tests, return only pass/fail + failures. |
 | `dmitry_ask_kill` | — | Kill persistent ask agent. Only if stuck on stale context. |
@@ -56,29 +58,43 @@ You SHOULD use `dmitry_ask` instead of Agent(Explore). It is persistent, cached,
 ## When to Use What
 
 ```
-Understand code     → dmitry_ask("what does this module do?")
-Find a symbol       → Grep
-Find files          → Glob
-Edit a file         → Read → Edit
-Shell commands      → dmitry_exec (Bash is blocked)
-Web search          → WebSearch (you search) → dmitry_web(url) (clean page)
-Documents           → dmitry_doc
-Tests               → dmitry_test
+Understand code           → dmitry_ask("what does this module do?")
+Find a symbol/string      → dmitry_exec("grep -rn 'pattern' path")   # RTK = instant
+Find files by name        → dmitry_exec("find . -name '*.ts'")       # RTK = instant
+Bulk/semantic file search → dmitry_ask("trace TokenManager usages")
+Edit a file               → Read → Edit
+Shell commands            → dmitry_exec (Bash/Grep/Glob blocked)
+Single known URL          → WebFetch (yourself)
+Single keyword search     → WebSearch (yourself)
+Multi-step web research   → dmitry_web("research task")
+Documents                 → dmitry_doc
+Tests                     → dmitry_test
 ```
 
-## Web Search Workflow
+## Web Research
 
-You plan and execute web searches yourself via WebSearch. Then use `dmitry_web` to clean up pages:
+When you need to explore the web — multiple searches, follow links, find sources among many — delegate to `dmitry_web`. He runs the search/fetch loop and returns an INVENTORY of pages (URL + kind + headings + literal excerpt). You read the inventory and decide what to fetch in full.
 
-```
-1. WebSearch("query")           ← you decide what to search
-2. Pick relevant URLs from results
-3. dmitry_web("https://...")    ← returns clean readable text, no HTML noise
-4. Reason about the content     ← you analyze and decide
-```
+dmitry_web is a librarian, not an analyst. He does NOT judge which page has the "right" answer. He brings the books — you pick.
 
-Do NOT delegate search planning to dmitry_web — it cannot search, only fetch and clean pages.
-Multiple dmitry_web calls can run in parallel for different URLs.
+**Use dmitry_web when:**
+- You need 2+ searches, or you don't know how many will be needed
+- You don't know which page has the answer (need to survey several)
+- You'd otherwise burn context fetching multiple pages just to triage them
+
+**Use WebSearch / WebFetch yourself when:**
+- You already know the URL
+- A single search will obviously give the answer
+- You need raw search snippets to make a quick routing decision
+
+**Example tasks for dmitry_web:**
+- "Survey current best practices for X — return inventory of 5-10 sources"
+- "Find pages discussing Y vs Z trade-offs"
+- "Find a worked production example of Z — search blogs, GitHub, official docs"
+
+**What you get back:** SEARCHES used + PAGES list (URL, kind, size, headings, literal excerpt) + DROPPED list (mechanical noise only). You then call `WebFetch` on the URLs you actually want to read in full.
+
+Multiple dmitry_web calls can run in parallel for independent research tasks.
 
 ## Why This Matters
 

@@ -25,6 +25,23 @@ function stripMarkdown(text: string): string {
     .trim();
 }
 
+// System prompt for exec/test output filtering.
+// Haiku here is a pure text-filtering tool — it must NOT read files or
+// explore the project. The task contains all data needed.
+const FILTER_SYSTEM_PROMPT = [
+  "You are a text-filtering tool. Your input is a command's stdout, your output is a compact version of it.",
+  "Your output is consumed by Claude Opus (another LLM), not a human.",
+  "",
+  "Do NOT read files. Do NOT run commands. Do NOT explore the project. Do NOT read CLAUDE.md.",
+  "Process ONLY the text given to you in the task. Everything you need is already in the prompt.",
+  "",
+  "OVERRIDE default formatting: plain text only.",
+  "No backticks, no ``` blocks, no **, no ##, no | tables, no bullet lists.",
+  "No preamble, no explanation, no commentary. Start directly with the data. English only.",
+  "",
+  "CRITICAL: Never write memory files. Never use the Write tool on any path under ~/.claude/.",
+].join("\n");
+
 function rtkRewrite(command: string): Promise<string | null> {
   return new Promise((resolve) => {
     execFile("rtk", ["rewrite", command], { timeout: 5000, ...(IS_WIN && { shell: true }) }, (err, stdout) => {
@@ -65,15 +82,13 @@ export async function handleExec(
   const maxLines = Math.min(lineCount, 30);
   const prompt = [
     `Filter output of: ${command}`,
-    `Input: ${lineCount} lines. Return max ${maxLines} lines. PLAIN TEXT ONLY — no markdown, no backticks, no headers.`,
+    `Input: ${lineCount} lines. Return max ${maxLines} lines.`,
     `Keep: errors, warnings, key values, counts, structure indicators. Drop: blank lines, repetition, decoration, progress bars.`,
-    `Start directly with the data. No preamble, no explanation.`,
-    `DO NOT read any project files or CLAUDE.md — only process the text given below.`,
     "",
     raw,
   ].join("\n");
 
-  const { result: raw_result, usage } = await oneshot(prompt, timeout ?? 60_000);
+  const { result: raw_result, usage } = await oneshot(prompt, { timeout: timeout ?? 60_000, systemPrompt: FILTER_SYSTEM_PROMPT });
   const result = stripMarkdown(raw_result);
   log({ ts: new Date().toISOString(), tool: "dmitry_exec", input: command, route: "haiku", input_len: command.length, raw_len: raw.length, output_len: result.length, exit_code: exitCode, output: result.slice(0, 3000), duration_ms: Date.now() - start, usage: usage ?? undefined });
   return result;
@@ -91,43 +106,59 @@ export async function handleAsk(
 }
 
 const WEB_SYSTEM_PROMPT = [
-  "You are a reader-mode content extractor. Your output is consumed by another LLM, not a human.",
+  "You are a web research scout. Your output is consumed by Claude Opus (another LLM), not a human.",
+  "Opus calls you when he needs to discover what's out there on a topic — multiple pages, links, follow-ups.",
   "",
-  "Your ONLY job: fetch web pages and return their text content, cleaned of HTML noise.",
-  "You are a pipe — content goes in, clean text comes out. Do NOT interpret, summarize, or aggregate.",
+  "Your role: librarian, not analyst. You find, fetch, and describe pages.",
+  "You do NOT judge which page has the \"right\" answer — Opus does that.",
+  "You return an inventory; Opus picks what to read in full.",
   "",
-  "KEEP: article text, headings, links as [text](url), code blocks, tables, lists, data, numbers.",
-  "REMOVE: navigation, sidebars, footers, cookie banners, ads, scripts, CSS, social buttons, breadcrumbs.",
+  "ASYMMETRIC RULE: when in doubt, INCLUDE a page. Never DROP one for \"seems off-topic\".",
+  "Adding noise is cheap — Opus skips it. Silently dropping a relevant page is unrecoverable.",
   "",
-  "FORMAT: plain text with blank lines between sections. Preserve original structure.",
-  "NEVER summarize. NEVER rephrase. NEVER aggregate data from multiple pages into one list.",
-  "Return the actual text as it appears on each page, just without the HTML junk.",
+  "Workflow:",
+  "1. Run WebSearch on the task. Add follow-up searches for broader coverage (typically 1-3 searches).",
+  "2. Pick 5-10 pages from search results. Fetch them with WebFetch.",
+  "3. If a fetched page contains links whose anchor text or URL keywords match the task,",
+  "   follow them and add to the inventory. You may guess wrong — that is fine, see asymmetric rule.",
+  "4. Stop after ~5-10 distinct pages. Do not over-explore.",
+  "5. Drop ONLY obvious mechanical noise: 404s, cookie/login walls, exact duplicates,",
+  "   shopping/ad pages with no content. Never drop a page because it \"seems off-topic\".",
+  "",
+  "OUTPUT (plain text):",
+  "",
+  "SEARCHES:",
+  "- query 1",
+  "- query 2",
+  "",
+  "PAGES:",
+  "",
+  "[1] https://example.com/x-guide",
+  "    KIND: official docs | blog post | paper | repo README | forum thread | news | Q&A",
+  "    SIZE: ~N words",
+  "    HEADINGS: Installation | Usage | Patterns | Troubleshooting",
+  "    EXCERPT: 200-400 chars of literal text from the page (no rephrasing)",
+  "",
+  "[2] https://...",
+  "    ...",
+  "",
+  "DROPPED (mechanical noise only):",
+  "- url — reason (404 / login wall / dupe of [1] / cookie page / shop page)",
+  "",
+  "Rules:",
+  "- Never write \"this is the best\" or \"more relevant\" — Opus decides.",
+  "- Never merge pages into one summary — keep them separate, one entry each.",
+  "- EXCERPT must be a literal quote from the page, not a paraphrase.",
+  "- Plain text only. No backticks, no ##, no **, no | tables. English only.",
 ].join("\n");
 
 export async function handleWeb(params: { task: string }): Promise<string> {
   const start = Date.now();
-  const isUrl = /^https?:\/\//i.test(params.task.trim());
-
-  const prompt = isUrl
-    ? [
-        "Fetch this URL with WebFetch. Return the page content cleaned of HTML noise.",
-        "If the page is very long, return the first ~3000 words of main content.",
-        "",
-        params.task,
-      ].join("\n")
-    : [
-        "Search the web for the query below using WebSearch.",
-        "Then fetch the top 1-2 results with WebFetch.",
-        "",
-        "For EACH page, output:",
-        "SOURCE: [url]",
-        "[cleaned page content]",
-        "",
-        "Return the actual page text — do NOT summarize, do NOT merge data across pages.",
-        "If a page is long, return the most relevant ~2000 words.",
-        "",
-        params.task,
-      ].join("\n");
+  const prompt = [
+    "RESEARCH TASK — explore the web and return an inventory of pages.",
+    "",
+    params.task,
+  ].join("\n");
 
   const { result: raw_result, usage } = await oneshot(prompt, { systemPrompt: WEB_SYSTEM_PROMPT });
   log({ ts: new Date().toISOString(), tool: "dmitry_web", input: params.task, route: "haiku", input_len: params.task.length, output_len: raw_result.length, output: raw_result.slice(0, 3000), duration_ms: Date.now() - start, usage: usage ?? undefined });
@@ -167,11 +198,10 @@ export async function handleTest(params: { command: string; timeout?: number }):
     `Exit code: ${exitCode}. Total lines: ${lineCount}.`,
     `Return ONLY: pass/fail summary, failed test names, error messages, assertion details.`,
     `Drop: passing tests, progress indicators, timing info, stack frames beyond the first 3.`,
-    `PLAIN TEXT ONLY. Start directly with results.`,
     "",
     raw,
   ].join("\n");
-  const { result: raw_result, usage } = await oneshot(prompt, params.timeout ?? 120_000);
+  const { result: raw_result, usage } = await oneshot(prompt, { timeout: params.timeout ?? 120_000, systemPrompt: FILTER_SYSTEM_PROMPT });
   const result = stripMarkdown(raw_result);
   log({ ts: new Date().toISOString(), tool: "dmitry_test", input: params.command, route: "haiku", input_len: params.command.length, raw_len: raw.length, output_len: result.length, exit_code: exitCode, output: result.slice(0, 3000), duration_ms: Date.now() - start, usage: usage ?? undefined });
   return result;

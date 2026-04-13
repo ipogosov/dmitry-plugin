@@ -28,5 +28,4 @@ BLOCK
   exit 0
 fi
 
-# WebSearch/WebFetch — block, redirect to dmitry_web
 echo '{}'
