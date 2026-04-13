@@ -22,10 +22,10 @@ interface LogEntry {
   session: string;
   tool: "dmitry_exec" | "dmitry_ask" | "dmitry_ask_kill" | "dmitry_web" | "dmitry_doc" | "dmitry_test";
   input: string;
-  route: "rtk" | "short" | "haiku" | "config";
+  route: "rtk" | "short" | "haiku" | "oversize";
   input_len: number;
   raw_len?: number;      // exec haiku route: raw output length before filtering
-  output_len: number;
+  output_len?: number;
   output?: string;       // first N chars returned to parent agent
   exit_code?: number;    // exec: process exit code (0 = success, -1 = signal/spawn error)
   rtk_cmd?: string;      // exec rtk route: rewritten command
