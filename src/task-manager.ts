@@ -1,0 +1,301 @@
+import { spawn, type ChildProcess } from "node:child_process";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { IS_WIN, buildRtkSettings, EMPTY_PLUGIN_DIR } from "./platform.js";
+import { extractUsage, type Usage } from "./logger.js";
+
+const RTK_SETTINGS = buildRtkSettings();
+
+// Full code-mutation tool set. The subagent executes mechanical work delegated
+// by parent Opus: mass edits, stubification, file moves, code extraction.
+// Bash is included so the agent can verify its own changes (typecheck/build/test).
+const TASK_TOOLS = "Read,Edit,Write,Grep,Glob,Bash";
+
+// Disallow recursion into Dmitry's own tools and external archivists.
+const DISALLOWED_TOOLS = [
+  "mcp__dmitry__dmitry_exec",
+  "mcp__dmitry__dmitry_ask",
+  "mcp__dmitry__dmitry_ask_kill",
+  "mcp__dmitry__dmitry_web",
+  "mcp__dmitry__dmitry_doc",
+  "mcp__dmitry__dmitry_test",
+  "mcp__dmitry__dmitry_task",
+  "mcp__hivemind__ask_archivist",
+  "mcp__hivemind__report_to_archivist",
+].join(",");
+
+// Idle kill: match Anthropic's 5-minute prompt-cache TTL. Holding the process
+// alive past cache expiry just burns RAM — the next call would cache-miss anyway.
+const IDLE_KILL_MS = 5 * 60 * 1000;
+
+const SYSTEM_PROMPT = [
+  "You are Dmitry Task — a subagent spawned by Claude Opus to execute a delegated task.",
+  "You have full code tools: Read, Edit, Write, Grep, Glob, Bash.",
+  "",
+  "ROLE: executor, not designer.",
+  "- Do exactly what the task asks. Nothing more, nothing less.",
+  "- No refactoring beyond the ask. No cleanup of adjacent code.",
+  "- No new features, no scope expansion. No 'while I'm here' changes.",
+  "- If the task is genuinely ambiguous about scope, ask ONE clarifying question and STOP. Do not guess.",
+  "- Only Write/Edit files explicitly named or logically implied by the task.",
+  "- Never touch paths under ~/.claude/ or ~/.dmitry/.",
+  "",
+  "CONCURRENCY: you may not be the only actor on these files.",
+  "- Before every Edit, re-Read the file. Never trust content from earlier turns.",
+  "- If a file's current state does not match what the task assumed, STOP and report the mismatch. Do not improvise or merge.",
+  "",
+  "VERIFY YOUR WORK:",
+  "- After any code change, run the project's verification and include the result in your report.",
+  "- Default order when the task doesn't specify: typecheck → build → test. Pick whichever exists, stop at the first that gives a meaningful signal.",
+  "- If CLAUDE.md at the project root specifies verification commands, use those instead.",
+  "- If verification fails AND the failure was caused by your change: fix it. That's in scope.",
+  "- If verification fails AND the failure existed before your change: report it, do NOT fix it.",
+  "- Do NOT run unrelated commands (cleanup scripts, deploys, formatters the task didn't ask for).",
+  "",
+  "CONTEXT: persistent session — context accumulates across calls.",
+  "- If you already read a file this session and it's unchanged, reference it instead of re-dumping.",
+  "- If you need project conventions, read CLAUDE.md at the project root once.",
+  "",
+  "OUTPUT:",
+  "- Return a compact diff summary (files changed, lines added/removed), not new file bodies.",
+  "- Include verification result: typecheck/build/test PASS or FAIL with key errors.",
+  "- For investigations (no edits): findings with file:line cites.",
+  "- Plain text. No markdown. No backticks, no ``` blocks, no **, no ##, no | tables. English only. No preamble.",
+  "",
+  "CRITICAL: never write memory files. Never use the Write tool on any path under ~/.claude/.",
+].join("\n");
+
+export type TaskModel = "haiku" | "sonnet" | "opus";
+
+export interface TaskResult {
+  result: string;
+  usage: Usage | null;
+  model_switched: boolean;
+}
+
+interface PendingRequest {
+  message: string;
+  model: TaskModel;
+  resolve: (value: TaskResult) => void;
+  reject: (reason: Error) => void;
+}
+
+export class TaskManager {
+  private proc: ChildProcess | null = null;
+  private currentModel: TaskModel | null = null;
+  private buffer = "";
+  private busy = false;
+  private queue: PendingRequest[] = [];
+  private activeRequest: { resolve: (v: TaskResult) => void; reject: (e: Error) => void; modelSwitched: boolean } | null = null;
+  private idleTimer: NodeJS.Timeout | null = null;
+
+  async send(message: string, model: TaskModel): Promise<TaskResult> {
+    return new Promise<TaskResult>((resolve, reject) => {
+      this.queue.push({ message, model, resolve, reject });
+      this.drain();
+    });
+  }
+
+  kill(reason = "manual kill"): void {
+    this.clearIdleTimer();
+    if (this.proc) {
+      this.proc.kill("SIGTERM");
+      this.proc = null;
+      this.currentModel = null;
+      this.buffer = "";
+      this.busy = false;
+      if (this.activeRequest) {
+        this.activeRequest.reject(new Error(`Task process killed: ${reason}`));
+        this.activeRequest = null;
+      }
+      for (const { reject } of this.queue) {
+        reject(new Error(`Task process killed: ${reason}`));
+      }
+      this.queue = [];
+    }
+  }
+
+  isAlive(): boolean {
+    return this.proc !== null;
+  }
+
+  currentModelName(): TaskModel | null {
+    return this.currentModel;
+  }
+
+  private drain(): void {
+    if (this.busy || this.queue.length === 0) return;
+
+    const req = this.queue[0];
+    let modelSwitched = false;
+
+    // Model change — kill existing instance, respawn on the new model
+    if (this.proc && this.currentModel !== req.model) {
+      this.kill(`model switch ${this.currentModel} → ${req.model}`);
+      // queue was flushed by kill(); re-enqueue this one request
+      this.queue.unshift(req);
+      modelSwitched = true;
+    }
+
+    this.clearIdleTimer();
+    if (!this.proc) this.spawnCli(req.model);
+
+    this.busy = true;
+    this.queue.shift();
+    this.activeRequest = { resolve: req.resolve, reject: req.reject, modelSwitched };
+
+    const input =
+      JSON.stringify({
+        type: "user",
+        message: { role: "user", content: req.message },
+      }) + "\n";
+
+    try {
+      this.proc!.stdin!.write(input);
+    } catch (err) {
+      if (this.activeRequest) {
+        this.activeRequest.reject(new Error(`Task stdin write failed: ${(err as Error).message}`));
+        this.activeRequest = null;
+      }
+      this.busy = false;
+    }
+  }
+
+  private spawnCli(model: TaskModel): void {
+    const child = spawn(
+      "claude",
+      [
+        "--model", model,
+        "--input-format", "stream-json",
+        "--output-format", "stream-json",
+        "--verbose",
+        "--setting-sources", "",
+        "--settings", RTK_SETTINGS,
+        "--plugin-dir", EMPTY_PLUGIN_DIR,
+        "--tools", TASK_TOOLS,
+        "--disallowed-tools", DISALLOWED_TOOLS,
+        "--disable-slash-commands",
+        "--add-dir", process.cwd(),
+        "--add-dir", join(homedir(), "Work"),
+        "--append-system-prompt", SYSTEM_PROMPT,
+        "--allowedTools", TASK_TOOLS,
+      ],
+      {
+        cwd: process.cwd(),
+        stdio: ["pipe", "pipe", "pipe"],
+        env: { ...process.env, DMITRY_INTERNAL: "1" },
+        ...(IS_WIN && { shell: true }),
+      },
+    );
+
+    this.proc = child;
+    this.currentModel = model;
+
+    child.stdout!.on("data", (chunk: Buffer) => {
+      this.handleData(chunk.toString());
+    });
+    child.stdout!.on("error", () => { /* handled via 'exit' */ });
+
+    // WHY: stderr must be drained or the pipe buffer fills and the child blocks.
+    child.stderr!.on("data", () => {});
+    child.stderr!.on("error", () => {});
+
+    // WHY: unhandled 'error' on stdin = uncaughtException = dead process.
+    child.stdin!.on("error", () => { /* child exit will handle rejection */ });
+
+    child.on("exit", (code) => {
+      if (this.proc === child) {
+        this.proc = null;
+        this.currentModel = null;
+        this.buffer = "";
+        this.busy = false;
+        this.clearIdleTimer();
+        if (this.activeRequest) {
+          this.activeRequest.reject(new Error(`Task process exited with code ${code}`));
+          this.activeRequest = null;
+        }
+        this.drain();
+      }
+    });
+
+    child.on("error", (err) => {
+      if (this.proc === child) {
+        this.proc = null;
+        this.currentModel = null;
+        this.clearIdleTimer();
+        if (this.activeRequest) {
+          this.activeRequest.reject(new Error(`Task process error: ${err.message}`));
+          this.activeRequest = null;
+        }
+        this.busy = false;
+      }
+    });
+  }
+
+  private handleData(data: string): void {
+    this.buffer += data;
+    const lines = this.buffer.split("\n");
+    this.buffer = lines.pop() || "";
+
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const parsed = JSON.parse(line);
+        this.handleMessage(parsed);
+      } catch {
+        // Not JSON, skip
+      }
+    }
+  }
+
+  private handleMessage(msg: Record<string, unknown>): void {
+    if (msg.type !== "result") return;
+
+    if (msg.subtype === "success") {
+      if (this.activeRequest) {
+        this.activeRequest.resolve({
+          result: (msg.result as string) || "",
+          usage: extractUsage(msg),
+          model_switched: this.activeRequest.modelSwitched,
+        });
+        this.activeRequest = null;
+      }
+      this.busy = false;
+      this.scheduleIdleKill();
+      this.drain();
+    }
+
+    if (msg.subtype === "error") {
+      if (this.activeRequest) {
+        this.activeRequest.reject(
+          new Error(`Task error: ${(msg as Record<string, unknown>).error || "unknown"}`),
+        );
+        this.activeRequest = null;
+      }
+      this.busy = false;
+      this.scheduleIdleKill();
+      this.drain();
+    }
+  }
+
+  private scheduleIdleKill(): void {
+    this.clearIdleTimer();
+    // Only arm the timer if the queue is drained — otherwise the next call
+    // will fire immediately and we don't want to kill mid-turn.
+    if (this.queue.length === 0) {
+      this.idleTimer = setTimeout(() => {
+        if (!this.busy && this.queue.length === 0) {
+          this.kill("idle 5min");
+        }
+      }, IDLE_KILL_MS);
+      this.idleTimer.unref?.();
+    }
+  }
+
+  private clearIdleTimer(): void {
+    if (this.idleTimer) {
+      clearTimeout(this.idleTimer);
+      this.idleTimer = null;
+    }
+  }
+}

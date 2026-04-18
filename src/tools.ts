@@ -1,5 +1,6 @@
 import { execCommand } from "./executor.js";
 import { CliManager } from "./cli-manager.js";
+import { TaskManager, type TaskModel } from "./task-manager.js";
 import { execFile } from "node:child_process";
 import { oneshot } from "./oneshot.js";
 import { log } from "./logger.js";
@@ -20,15 +21,17 @@ const MAX_HAIKU_FILTER_INPUT_CHARS = Math.floor(200_000 * 3 * 0.95);
 
 // Bump this marker whenever DMITRY_MD_CONTENT changes — sessions detecting a
 // stale or missing marker will rewrite ~/.claude/dmitry.md from the constant.
-const DMITRY_MD_VERSION_MARKER = "<!-- dmitry-md v1 -->";
+const DMITRY_MD_VERSION_MARKER = "<!-- dmitry-md v3 -->";
 const DMITRY_MD_CONTENT = [
   DMITRY_MD_VERSION_MARKER,
   "",
-  "Dmitry MCP is active. Bash, Grep, and Glob are blocked at the PreToolUse hook — calling them returns an error, not output.",
+  "Dmitry MCP is active. Bash, Grep, Glob, and Task are blocked at the PreToolUse hook — calling them returns an error, not output.",
   "",
-  "Route through Dmitry: dmitry_exec for any shell/search command, dmitry_ask for cross-file code investigation, dmitry_test for tests, dmitry_doc for PDF/DOCX/image, dmitry_web for multi-step research. Read and Edit are not blocked. Write task descriptions in English.",
+  "Route through Dmitry: dmitry_exec for any shell/search command, dmitry_task (Sonnet by default) for mechanical code work / exploration / delegation — replaces native Task, dmitry_ask for cross-file code investigation (Haiku), dmitry_test for tests, dmitry_doc for PDF/DOCX/image, dmitry_web for multi-step research. Read and Edit are not blocked. Write task descriptions in English.",
   "",
   "Dmitry is the default, not optional — never ask permission. The using-dmitry skill loads on demand with the full reference.",
+  "",
+  "If dmitry_task returns \"No such tool available\": the MCP server disconnected. Ask the operator to run /mcp and reconnect dmitry. If reconnect fails, STOP the task and ask the operator what to do — do NOT fall back to native Task/Agent.",
   "",
 ].join("\n");
 
@@ -133,8 +136,37 @@ export async function handleExec(
   const rtkCmd = await rtkRewrite(command);
   if (rtkCmd) {
     const { output: result, exitCode } = await execCommand(rtkCmd, timeout ?? 60_000);
-    log({ ts: new Date().toISOString(), tool: "dmitry_exec", input: command, route: "rtk", input_len: command.length, output_len: result.length, exit_code: exitCode, rtk_cmd: rtkCmd, output: result.slice(0, 1000), duration_ms: Date.now() - start });
-    return result;
+    const lineCount = result.split("\n").length;
+
+    // Short output — return raw, no filter cost
+    if (lineCount < 10) {
+      log({ ts: new Date().toISOString(), tool: "dmitry_exec", input: command, route: "rtk", input_len: command.length, output_len: result.length, exit_code: exitCode, rtk_cmd: rtkCmd, output: result.slice(0, 1000), duration_ms: Date.now() - start });
+      return result;
+    }
+
+    // Oversize — fail fast rather than dump megabytes into parent context
+    if (result.length > MAX_HAIKU_FILTER_INPUT_CHARS) {
+      log({ ts: new Date().toISOString(), tool: "dmitry_exec", input: command, route: "rtk-oversize", input_len: command.length, raw_len: result.length, exit_code: exitCode, rtk_cmd: rtkCmd, duration_ms: Date.now() - start });
+      throw new Error(
+        `dmitry_exec: RTK output ${result.length} chars exceeds Haiku filter limit ${MAX_HAIKU_FILTER_INPUT_CHARS} (200k tokens × 3 chars/token × 0.95 safety gap). ` +
+          `Narrow the command scope: restrict paths, add include/exclude filters, or pre-filter with head/tail.`,
+      );
+    }
+
+    // Long output — send to Haiku for compression before returning to parent
+    const maxLines = Math.min(lineCount, 30);
+    const filterPrompt = [
+      `Filter output of: ${command}`,
+      `Input: ${lineCount} lines. Return max ${maxLines} lines.`,
+      `Keep: errors, warnings, key values, counts, structure indicators. Drop: blank lines, repetition, decoration, progress bars.`,
+      "",
+      result,
+    ].join("\n");
+
+    const { result: raw_filtered, usage: rtk_usage } = await oneshot(filterPrompt, { timeout: timeout ?? 60_000, systemPrompt: FILTER_SYSTEM_PROMPT, tools: "", replaceSystemPrompt: true });
+    const filtered = stripMarkdown(raw_filtered);
+    log({ ts: new Date().toISOString(), tool: "dmitry_exec", input: command, route: "rtk-haiku", input_len: command.length, raw_len: result.length, output_len: filtered.length, exit_code: exitCode, rtk_cmd: rtkCmd, output: filtered.slice(0, 3000), duration_ms: Date.now() - start, usage: rtk_usage ?? undefined });
+    return filtered;
   }
 
   // RTK doesn't cover — run raw
@@ -297,4 +329,34 @@ export function handleAskKill(cli: CliManager): string {
   const status = wasAlive ? "Ask agent killed and context cleared." : "Ask agent was not running.";
   log({ ts: new Date().toISOString(), tool: "dmitry_ask_kill", input: "kill", route: "short", input_len: 0, output_len: status.length, duration_ms: 0 });
   return status;
+}
+
+export async function handleTask(
+  task: TaskManager,
+  params: { task?: string; model?: TaskModel; kill?: boolean },
+): Promise<string> {
+  const start = Date.now();
+  maybeInstallDmitryMd();
+
+  // Kill path — reset the subagent, ignore task/model
+  if (params.kill === true) {
+    const wasAlive = task.isAlive();
+    const prevModel = task.currentModelName();
+    task.kill("manual kill");
+    const status = wasAlive
+      ? `Task agent killed and context cleared (was running ${prevModel}).`
+      : "Task agent was not running.";
+    log({ ts: new Date().toISOString(), tool: "dmitry_task", input: "kill", route: "short", input_len: 0, output_len: status.length, duration_ms: Date.now() - start });
+    return status;
+  }
+
+  if (!params.task || !params.task.trim()) {
+    throw new Error("dmitry_task: 'task' is required unless kill=true.");
+  }
+
+  const model: TaskModel = params.model ?? "sonnet";
+  const { result: raw_result, usage, model_switched } = await task.send(params.task, model);
+  const result = stripMarkdown(raw_result);
+  log({ ts: new Date().toISOString(), tool: "dmitry_task", input: params.task, route: "haiku", input_len: params.task.length, output_len: result.length, output: result.slice(0, 3000), duration_ms: Date.now() - start, usage: usage ?? undefined, model, model_switched });
+  return result;
 }

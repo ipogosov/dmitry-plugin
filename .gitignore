@@ -1,2 +1,4 @@
 node_modules/
 dist/
+# CocoIndex Code (ccc)
+/.cocoindex_code/

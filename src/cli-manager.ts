@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { IS_WIN, buildRtkSettings, EMPTY_PLUGIN_DIR } from "./platform.js";
-import { extractUsage, type Usage } from "./logger.js";
+import { extractUsage, mergeUsage, type Usage } from "./logger.js";
 
 const RTK_SETTINGS = buildRtkSettings();
 
@@ -17,6 +17,8 @@ const DISALLOWED_TOOLS = [
   "mcp__dmitry__dmitry_web",
   "mcp__dmitry__dmitry_doc",
   "mcp__dmitry__dmitry_test",
+  "mcp__dmitry__dmitry_task",
+  "mcp__dmitry__dmitry_task_kill",
   "mcp__hivemind__ask_archivist",
   "mcp__hivemind__report_to_archivist",
 ].join(",");
@@ -74,6 +76,7 @@ export class CliManager {
   private busy = false;
   private queue: PendingRequest[] = [];
   private activeRequest: { resolve: (v: CliResult) => void; reject: (e: Error) => void } | null = null;
+  private turnUsage: Usage | null = null;
 
   async send(message: string): Promise<CliResult> {
     return new Promise<CliResult>((resolve, reject) => {
@@ -88,6 +91,7 @@ export class CliManager {
       this.proc = null;
       this.buffer = "";
       this.busy = false;
+      this.turnUsage = null;
       if (this.activeRequest) {
         this.activeRequest.reject(new Error("CLI process killed"));
         this.activeRequest = null;
@@ -118,7 +122,16 @@ export class CliManager {
         message: { role: "user", content: req.message },
       }) + "\n";
 
-    this.proc!.stdin!.write(input);
+    try {
+      this.proc!.stdin!.write(input);
+    } catch (err) {
+      // Stdin closed under us — surface as request failure, let exit handler clean up.
+      if (this.activeRequest) {
+        this.activeRequest.reject(new Error(`CLI stdin write failed: ${(err as Error).message}`));
+        this.activeRequest = null;
+      }
+      this.busy = false;
+    }
   }
 
   private spawnCli(): void {
@@ -157,6 +170,15 @@ export class CliManager {
     child.stdout!.on("data", (chunk: Buffer) => {
       this.handleData(chunk.toString());
     });
+    child.stdout!.on("error", () => { /* handled via 'exit' */ });
+
+    // WHY: stderr must be drained or the pipe buffer fills and the child blocks.
+    // We don't retain it — for the persistent agent, failures surface as subtype=error via stdout.
+    child.stderr!.on("data", () => {});
+    child.stderr!.on("error", () => {});
+
+    // WHY: unhandled 'error' on stdin = uncaughtException = dead process.
+    child.stdin!.on("error", () => { /* child exit will handle rejection */ });
 
     child.on("exit", (code) => {
       if (this.proc === child) {
@@ -200,13 +222,22 @@ export class CliManager {
   }
 
   private handleMessage(msg: Record<string, unknown>): void {
+    if (msg.type === "assistant") {
+      this.turnUsage = mergeUsage(this.turnUsage, msg);
+      return;
+    }
+
     if (msg.type !== "result") return;
 
     if (msg.subtype === "success") {
       if (this.activeRequest) {
+        const usage = this.turnUsage
+          ? { ...this.turnUsage, cost_usd: (msg.total_cost_usd as number) || 0, num_turns: (msg.num_turns as number) || 0 }
+          : extractUsage(msg);
+        this.turnUsage = null;
         this.activeRequest.resolve({
           result: (msg.result as string) || "",
-          usage: extractUsage(msg),
+          usage,
         });
         this.activeRequest = null;
       }
@@ -215,6 +246,7 @@ export class CliManager {
     }
 
     if (msg.subtype === "error") {
+      this.turnUsage = null;
       if (this.activeRequest) {
         this.activeRequest.reject(
           new Error(`Haiku error: ${(msg as Record<string, unknown>).error || "unknown"}`),
