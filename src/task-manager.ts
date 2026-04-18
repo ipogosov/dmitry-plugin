@@ -195,10 +195,19 @@ export class TaskManager {
   }
 
   private spawnCli(model: TaskModel): void {
+    // 1M context window. Opus 4.7, Opus 4.6, and Sonnet 4.6 support it via the
+    // [1m] alias suffix. Rationale: for a persistent multi-hour coding subagent,
+    // a 1M window is preferable to auto-compaction — compaction drops earlier
+    // turns and forces the agent to re-read files. Haiku has no 1M variant.
+    // Plan cost: Max/Team/Enterprise include 1M Opus free; Sonnet 1M and all
+    // 1M on Pro need extra usage. API/pay-as-you-go: free. Operators on a plan
+    // that would be billed can set DMITRY_TASK_1M_CONTEXT=0 to fall back.
+    const wants1M = model !== "haiku" && process.env.DMITRY_TASK_1M_CONTEXT !== "0";
+    const modelArg = wants1M ? `${model}[1m]` : model;
     const child = spawn(
       "claude",
       [
-        "--model", model,
+        "--model", modelArg,
         "--input-format", "stream-json",
         "--output-format", "stream-json",
         "--verbose",
