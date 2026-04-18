@@ -88,6 +88,7 @@ export class TaskManager {
   private queue: PendingRequest[] = [];
   private activeRequest: { resolve: (v: TaskResult) => void; reject: (e: Error) => void; modelSwitched: boolean } | null = null;
   private idleTimer: NodeJS.Timeout | null = null;
+  private turnCount = 0;
 
   async send(message: string, model: TaskModel): Promise<TaskResult> {
     return new Promise<TaskResult>((resolve, reject) => {
@@ -193,6 +194,7 @@ export class TaskManager {
 
     this.proc = child;
     this.currentModel = model;
+    this.turnCount = 0;
 
     child.stdout!.on("data", (chunk: Buffer) => {
       this.handleData(chunk.toString());
@@ -252,6 +254,25 @@ export class TaskManager {
   }
 
   private handleMessage(msg: Record<string, unknown>): void {
+    // Heartbeat: one line per assistant turn to worker stderr. Visible in
+    // Claude Code's MCP log so the operator can see the task is alive during
+    // multi-minute runs without any round-trip to the parent.
+    if (msg.type === "assistant") {
+      this.turnCount++;
+      const message = msg.message as { content?: Array<Record<string, unknown>> } | undefined;
+      const blocks = message?.content ?? [];
+      const toolNames = blocks
+        .filter((b) => b.type === "tool_use" && typeof b.name === "string")
+        .map((b) => b.name as string);
+      const textLen = blocks
+        .filter((b) => b.type === "text")
+        .reduce((a, b) => a + (typeof b.text === "string" ? (b.text as string).length : 0), 0);
+      const summary = toolNames.length > 0 ? `tool=${toolNames.join(",")}` : `text=${textLen}ch`;
+      const model = this.currentModel ?? "?";
+      process.stderr.write(`[dmitry.task] turn ${this.turnCount} model=${model} ${summary}\n`);
+      return;
+    }
+
     if (msg.type !== "result") return;
 
     if (msg.subtype === "success") {

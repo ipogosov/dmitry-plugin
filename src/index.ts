@@ -50,6 +50,10 @@ async function runServer(): Promise<void> {
   const TIMEOUT_DOC   = 300_000;
   const TIMEOUT_TEST  = 180_000;
   const TIMEOUT_TASK  = 900_000;
+  // Per-dispatch ceiling for dmitry_task. Writing-plans expansions and bundled
+  // multi-task dispatches can legitimately run 20–30 min; 15 min cut them off.
+  const TIMEOUT_TASK_MAX = 1_800_000;
+  const TIMEOUT_TASK_MIN = 60_000;
 
   // Thin adapter: every tool is `dispatcher.run(name, params, timeout)`.
   // Error path: dispatcher rejects → we return a text error to the MCP client.
@@ -153,13 +157,24 @@ async function runServer(): Promise<void> {
 
   server.tool(
     "dmitry_task",
-    "Persistent subagent (Sonnet default). Replaces native Task/Agent. Full code tools + self-verifies. Context accumulates; idle >5min auto-kill. Pass kill:true to reset early. Pass model=opus only for novel design/debug.",
+    "Persistent subagent (Sonnet default). Replaces native Task/Agent. Full code tools + self-verifies. Context accumulates; idle >5min auto-kill. Pass kill:true to reset early. Pass model=opus only for novel design/debug. Pass timeout_ms to extend the default 15-min ceiling up to 30 min for large writing-plans or bundled tasks.",
     {
       task: z.string().optional().describe("Task for the subagent. English only. Omit when kill=true."),
       model: z.enum(["haiku", "sonnet", "opus"]).optional().describe("Model tier (default: sonnet)."),
       kill: z.boolean().optional().describe("If true, kill the subagent and clear its context. Ignores task/model."),
+      timeout_ms: z.number().int().min(TIMEOUT_TASK_MIN).max(TIMEOUT_TASK_MAX).optional().describe("Per-dispatch timeout in ms. Default 900000 (15 min), max 1800000 (30 min). Raise for writing-plans expansions or multi-task bundles."),
     },
-    wrap("dmitry_task", TIMEOUT_TASK),
+    async (params) => {
+      const requested = params.timeout_ms as number | undefined;
+      const timeoutMs = requested ?? TIMEOUT_TASK;
+      try {
+        const result = await dispatcher.run("dmitry_task", params, timeoutMs);
+        return { content: [{ type: "text" as const, text: result }] };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { content: [{ type: "text" as const, text: `Error: ${msg}` }] };
+      }
+    },
   );
 
   server.tool(
