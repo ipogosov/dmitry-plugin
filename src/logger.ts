@@ -93,3 +93,40 @@ export function logHeartbeat(entry: Omit<HeartbeatEntry, "session">): void {
   const path = join(LOG_DIR, `heartbeat-${date}.jsonl`);
   appendFileSync(path, JSON.stringify({ ...entry, session: SESSION_ID }) + "\n");
 }
+
+// Per-turn profile for investigating dispatch-vs-inline slowness (H1: mandatory
+// re-Read, H2: unfiltered Bash context bloat, H3: verify-every-change tax).
+// One JSONL entry per dispatch with full per-turn breakdown; aggregate offline
+// with jq. Separate file so the shape can evolve without breaking stats.ts.
+export interface TurnProfile {
+  turn: number;
+  latency_ms: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_creation_tokens: number;
+  tools: string[];
+}
+
+export interface TaskProfileEntry {
+  ts: string;
+  session: string;
+  dispatch_id: string;
+  model: "haiku" | "sonnet" | "opus";
+  context_1m: boolean;
+  task_preview: string;
+  outcome: "success" | "error" | "cancelled";
+  total_duration_ms: number;
+  total_turns: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_cache_read_tokens: number;
+  total_cache_creation_tokens: number;
+  turns: TurnProfile[];
+}
+
+export function logTaskProfile(entry: Omit<TaskProfileEntry, "session">): void {
+  const date = entry.ts.slice(0, 10);
+  const path = join(LOG_DIR, `task-profile-${date}.jsonl`);
+  appendFileSync(path, JSON.stringify({ ...entry, session: SESSION_ID }) + "\n");
+}

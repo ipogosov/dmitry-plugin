@@ -1,8 +1,9 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { randomBytes } from "node:crypto";
 import { IS_WIN, buildRtkSettings, EMPTY_PLUGIN_DIR } from "./platform.js";
-import { extractUsage, logHeartbeat, type Usage } from "./logger.js";
+import { extractUsage, logHeartbeat, logTaskProfile, type Usage, type TurnProfile } from "./logger.js";
 
 const RTK_SETTINGS = buildRtkSettings();
 
@@ -93,6 +94,11 @@ export class TaskManager {
   private idleTimer: NodeJS.Timeout | null = null;
   private turnCount = 0;
   private lastActivity = "";
+  private currentDispatchId: string | null = null;
+  private currentDispatchStart = 0;
+  private currentDispatchTaskPreview = "";
+  private currentTurnStart = 0;
+  private currentTurns: TurnProfile[] = [];
 
   async send(message: string, model: TaskModel, context1M = false): Promise<TaskResult> {
     return new Promise<TaskResult>((resolve, reject) => {
@@ -137,6 +143,7 @@ export class TaskManager {
       `Last activity: ${this.lastActivity || "(no assistant turns yet)"}`,
       "Files written and commits made before this point are on disk — verify via git log / filesystem before redispatching.",
     ].join("\n");
+    this.emitProfile("cancelled");
     const req = this.activeRequest;
     this.activeRequest = null;
     req.resolve({ result: partial, usage: null, model_switched: req.modelSwitched });
@@ -187,6 +194,15 @@ export class TaskManager {
     this.busy = true;
     this.queue.shift();
     this.activeRequest = { resolve: req.resolve, reject: req.reject, modelSwitched };
+
+    // Profiler: begin dispatch window. One entry per caller-observed dispatch —
+    // a model/context respawn restarts the cycle; an idle-kill followed by a
+    // new send also restarts it.
+    this.currentDispatchId = randomBytes(4).toString("hex");
+    this.currentDispatchStart = Date.now();
+    this.currentDispatchTaskPreview = req.message.slice(0, 200);
+    this.currentTurns = [];
+    this.currentTurnStart = this.currentDispatchStart;
 
     const input =
       JSON.stringify({
@@ -272,6 +288,7 @@ export class TaskManager {
         this.busy = false;
         this.clearIdleTimer();
         if (this.activeRequest) {
+          this.emitProfile("error");
           this.activeRequest.reject(new Error(`Task process exited with code ${code}`));
           this.activeRequest = null;
         }
@@ -315,7 +332,7 @@ export class TaskManager {
     // multi-minute runs without any round-trip to the parent.
     if (msg.type === "assistant") {
       this.turnCount++;
-      const message = msg.message as { content?: Array<Record<string, unknown>> } | undefined;
+      const message = msg.message as { content?: Array<Record<string, unknown>>; usage?: Record<string, unknown> } | undefined;
       const blocks = message?.content ?? [];
       const toolNames = blocks
         .filter((b) => b.type === "tool_use" && typeof b.name === "string")
@@ -333,12 +350,27 @@ export class TaskManager {
         model,
         summary,
       });
+      if (this.currentDispatchId) {
+        const now = Date.now();
+        const u = message?.usage;
+        this.currentTurns.push({
+          turn: this.turnCount,
+          latency_ms: now - this.currentTurnStart,
+          input_tokens: (u?.input_tokens as number) || 0,
+          output_tokens: (u?.output_tokens as number) || 0,
+          cache_read_tokens: (u?.cache_read_input_tokens as number) || 0,
+          cache_creation_tokens: (u?.cache_creation_input_tokens as number) || 0,
+          tools: toolNames,
+        });
+        this.currentTurnStart = now;
+      }
       return;
     }
 
     if (msg.type !== "result") return;
 
     if (msg.subtype === "success") {
+      this.emitProfile("success");
       if (this.activeRequest) {
         this.activeRequest.resolve({
           result: (msg.result as string) || "",
@@ -353,6 +385,7 @@ export class TaskManager {
     }
 
     if (msg.subtype === "error") {
+      this.emitProfile("error");
       if (this.activeRequest) {
         this.activeRequest.reject(
           new Error(`Task error: ${(msg as Record<string, unknown>).error || "unknown"}`),
@@ -363,6 +396,28 @@ export class TaskManager {
       this.scheduleIdleKill();
       this.drain();
     }
+  }
+
+  private emitProfile(outcome: "success" | "error" | "cancelled"): void {
+    if (!this.currentDispatchId) return;
+    const turns = this.currentTurns;
+    logTaskProfile({
+      ts: new Date().toISOString(),
+      dispatch_id: this.currentDispatchId,
+      model: (this.currentModel ?? "sonnet") as "haiku" | "sonnet" | "opus",
+      context_1m: this.currentContext1M,
+      task_preview: this.currentDispatchTaskPreview,
+      outcome,
+      total_duration_ms: Date.now() - this.currentDispatchStart,
+      total_turns: turns.length,
+      total_input_tokens: turns.reduce((a, t) => a + t.input_tokens, 0),
+      total_output_tokens: turns.reduce((a, t) => a + t.output_tokens, 0),
+      total_cache_read_tokens: turns.reduce((a, t) => a + t.cache_read_tokens, 0),
+      total_cache_creation_tokens: turns.reduce((a, t) => a + t.cache_creation_tokens, 0),
+      turns,
+    });
+    this.currentDispatchId = null;
+    this.currentTurns = [];
   }
 
   private scheduleIdleKill(): void {
