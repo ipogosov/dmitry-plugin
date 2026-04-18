@@ -221,6 +221,11 @@ export class TaskManager {
         "--add-dir", join(homedir(), "Work"),
         "--append-system-prompt", SYSTEM_PROMPT,
         "--allowedTools", TASK_TOOLS,
+        // Without this, Edit/Write/Bash hang waiting for an interactive
+        // permission prompt that stream-json stdin cannot answer. Scope is
+        // already constrained by --tools/--disallowed-tools/--add-dir and the
+        // system-prompt rules (no writes under ~/.claude or ~/.dmitry).
+        "--permission-mode", "bypassPermissions",
       ],
       {
         cwd: process.cwd(),
