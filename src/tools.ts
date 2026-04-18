@@ -333,7 +333,7 @@ export function handleAskKill(cli: CliManager): string {
 
 export async function handleTask(
   task: TaskManager,
-  params: { task?: string; model?: TaskModel; kill?: boolean },
+  params: { task?: string; model?: TaskModel; kill?: boolean; context_1m?: boolean },
 ): Promise<string> {
   const start = Date.now();
   maybeInstallDmitryMd();
@@ -355,7 +355,7 @@ export async function handleTask(
   }
 
   const model: TaskModel = params.model ?? "sonnet";
-  const { result: raw_result, usage, model_switched } = await task.send(params.task, model);
+  const { result: raw_result, usage, model_switched } = await task.send(params.task, model, params.context_1m === true);
   const result = stripMarkdown(raw_result);
   log({ ts: new Date().toISOString(), tool: "dmitry_task", input: params.task, route: "haiku", input_len: params.task.length, output_len: result.length, output: result.slice(0, 3000), duration_ms: Date.now() - start, usage: usage ?? undefined, model, model_switched });
   return result;

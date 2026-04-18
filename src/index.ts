@@ -163,6 +163,7 @@ async function runServer(): Promise<void> {
       model: z.enum(["haiku", "sonnet", "opus"]).optional().describe("Model tier (default: sonnet)."),
       kill: z.boolean().optional().describe("If true, kill the subagent and clear its context. Ignores task/model."),
       timeout_ms: z.number().int().min(TIMEOUT_TASK_MIN).max(TIMEOUT_TASK_MAX).optional().describe("Per-dispatch timeout in ms. Default 900000 (15 min), max 1800000 (30 min). Raise for writing-plans expansions or multi-task bundles."),
+      context_1m: z.boolean().optional().describe("Use 1M context window (Sonnet/Opus only). Default false (200k). Enable for long plans, large specs, or multi-file investigations; leave off for short mechanical tasks to save cost. Env DMITRY_TASK_1M_CONTEXT=1 forces it on globally."),
     },
     async (params) => {
       const requested = params.timeout_ms as number | undefined;

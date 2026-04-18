@@ -76,6 +76,7 @@ export interface TaskResult {
 interface PendingRequest {
   message: string;
   model: TaskModel;
+  context1M: boolean;
   resolve: (value: TaskResult) => void;
   reject: (reason: Error) => void;
 }
@@ -83,6 +84,7 @@ interface PendingRequest {
 export class TaskManager {
   private proc: ChildProcess | null = null;
   private currentModel: TaskModel | null = null;
+  private currentContext1M = false;
   private buffer = "";
   private busy = false;
   private queue: PendingRequest[] = [];
@@ -91,9 +93,9 @@ export class TaskManager {
   private turnCount = 0;
   private lastActivity = "";
 
-  async send(message: string, model: TaskModel): Promise<TaskResult> {
+  async send(message: string, model: TaskModel, context1M = false): Promise<TaskResult> {
     return new Promise<TaskResult>((resolve, reject) => {
-      this.queue.push({ message, model, resolve, reject });
+      this.queue.push({ message, model, context1M, resolve, reject });
       this.drain();
     });
   }
@@ -104,6 +106,7 @@ export class TaskManager {
       this.proc.kill("SIGTERM");
       this.proc = null;
       this.currentModel = null;
+      this.currentContext1M = false;
       this.buffer = "";
       this.busy = false;
       if (this.activeRequest) {
@@ -140,6 +143,7 @@ export class TaskManager {
       this.proc.kill("SIGTERM");
       this.proc = null;
       this.currentModel = null;
+      this.currentContext1M = false;
       this.buffer = "";
       this.busy = false;
       this.clearIdleTimer();
@@ -159,19 +163,25 @@ export class TaskManager {
     const req = this.queue[0];
     let modelSwitched = false;
 
-    // Model change — kill existing instance, respawn on the new model.
+    // Model OR context-size change — kill existing instance, respawn.
     // WHY shift before kill: kill() iterates and rejects every queued request.
     // If req is still in queue when kill runs, its promise is settled as
     // rejected, and the later activeRequest.resolve() on the result is a no-op.
-    if (this.proc && this.currentModel !== req.model) {
+    const needsRespawn =
+      this.proc !== null &&
+      (this.currentModel !== req.model || this.currentContext1M !== req.context1M);
+    if (needsRespawn) {
       this.queue.shift();
-      this.kill(`model switch ${this.currentModel} → ${req.model}`);
+      const reason = this.currentModel !== req.model
+        ? `model switch ${this.currentModel} → ${req.model}`
+        : `context switch ${this.currentContext1M ? "1m" : "200k"} → ${req.context1M ? "1m" : "200k"}`;
+      this.kill(reason);
       this.queue.unshift(req);
       modelSwitched = true;
     }
 
     this.clearIdleTimer();
-    if (!this.proc) this.spawnCli(req.model);
+    if (!this.proc) this.spawnCli(req.model, req.context1M);
 
     this.busy = true;
     this.queue.shift();
@@ -194,15 +204,14 @@ export class TaskManager {
     }
   }
 
-  private spawnCli(model: TaskModel): void {
+  private spawnCli(model: TaskModel, context1M: boolean): void {
     // 1M context window. Opus 4.7, Opus 4.6, and Sonnet 4.6 support it via the
-    // [1m] alias suffix. Rationale: for a persistent multi-hour coding subagent,
-    // a 1M window is preferable to auto-compaction — compaction drops earlier
-    // turns and forces the agent to re-read files. Haiku has no 1M variant.
-    // Plan cost: Max/Team/Enterprise include 1M Opus free; Sonnet 1M and all
-    // 1M on Pro need extra usage. API/pay-as-you-go: free. Operators on a plan
-    // that would be billed can set DMITRY_TASK_1M_CONTEXT=0 to fall back.
-    const wants1M = model !== "haiku" && process.env.DMITRY_TASK_1M_CONTEXT !== "0";
+    // [1m] alias suffix. Haiku has no 1M variant. Default is 200k: 1M Sonnet
+    // costs extra on most plans and only pays off for long plans / large specs.
+    // Caller opts in per-dispatch with context_1m:true; env DMITRY_TASK_1M_CONTEXT=1
+    // forces it on globally for operators who prefer the old default.
+    const force1M = process.env.DMITRY_TASK_1M_CONTEXT === "1";
+    const wants1M = model !== "haiku" && (context1M || force1M);
     const modelArg = wants1M ? `${model}[1m]` : model;
     const child = spawn(
       "claude",
@@ -237,6 +246,7 @@ export class TaskManager {
 
     this.proc = child;
     this.currentModel = model;
+    this.currentContext1M = wants1M;
     this.turnCount = 0;
     this.lastActivity = "";
 
@@ -256,6 +266,7 @@ export class TaskManager {
       if (this.proc === child) {
         this.proc = null;
         this.currentModel = null;
+        this.currentContext1M = false;
         this.buffer = "";
         this.busy = false;
         this.clearIdleTimer();

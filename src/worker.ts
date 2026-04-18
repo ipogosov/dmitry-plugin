@@ -50,7 +50,7 @@ async function dispatch(tool: string, params: Record<string, unknown>): Promise<
     case "dmitry_web":  return handleWeb(params as { task: string });
     case "dmitry_doc":  return handleDoc(params as { task: string });
     case "dmitry_test": return handleTest(params as { command: string; timeout?: number });
-    case "dmitry_task": return handleTask(task, params as { task?: string; model?: "haiku" | "sonnet" | "opus"; kill?: boolean });
+    case "dmitry_task": return handleTask(task, params as { task?: string; model?: "haiku" | "sonnet" | "opus"; kill?: boolean; context_1m?: boolean });
     default: throw new Error(`unknown tool: ${tool}`);
   }
 }
