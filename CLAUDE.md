@@ -33,27 +33,22 @@ Routing in `src/tools.ts`:
 ```bash
 npm run build        # TypeScript check (tsc → dist/)
 npm run bundle       # esbuild → plugins/dmitry/server/dmitry.mjs
-npm run dev:on       # Switch to dev mode (symlink to local source)
-npm run dev:off      # Switch back to prod (last published version)
-npm run dev:status   # Show current mode
 ```
 
 ## Workflow
 
-### Development
+Single-source install: `installPath` in `~/.claude/plugins/installed_plugins.json` points directly at `plugins/dmitry/` in this repo. No cache copies, no dev/prod toggle — one authoritative location.
+
+### Editing
 ```
-npm run dev:on       # once — switch plugin to local source
 src/*.ts → edit → npm run bundle → restart Claude session → test
 ```
 
 ### Release
 ```
-npm run dev:off      # switch back to prod
 bump version in plugins/dmitry/.claude-plugin/plugin.json
 git add + commit + push
 ```
-
-Dev mode creates a symlink `~/.claude/plugins/cache/dmitry-plugin/dmitry/dev` → `plugins/dmitry/`. Each `npm run bundle` updates the bundle in-place. Restart session to pick up changes.
 
 ## Gotchas
 
