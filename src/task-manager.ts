@@ -99,6 +99,11 @@ export class TaskManager {
   private currentDispatchTaskPreview = "";
   private currentTurnStart = 0;
   private currentTurns: TurnProfile[] = [];
+  // Dedup key for per-turn profiling. stream-json can emit one `assistant` event
+  // per content block, all sharing the same message.id and cumulative usage.
+  // Counting each as a turn inflates token totals N×. We merge events sharing
+  // an id into a single turn.
+  private lastMessageId: string | null = null;
 
   async send(message: string, model: TaskModel, context1M = false): Promise<TaskResult> {
     return new Promise<TaskResult>((resolve, reject) => {
@@ -203,6 +208,7 @@ export class TaskManager {
     this.currentDispatchTaskPreview = req.message.slice(0, 200);
     this.currentTurns = [];
     this.currentTurnStart = this.currentDispatchStart;
+    this.lastMessageId = null;
 
     const input =
       JSON.stringify({
@@ -331,8 +337,8 @@ export class TaskManager {
     // Claude Code's MCP log so the operator can see the task is alive during
     // multi-minute runs without any round-trip to the parent.
     if (msg.type === "assistant") {
-      this.turnCount++;
-      const message = msg.message as { content?: Array<Record<string, unknown>>; usage?: Record<string, unknown> } | undefined;
+      const message = msg.message as { id?: string; content?: Array<Record<string, unknown>>; usage?: Record<string, unknown> } | undefined;
+      const messageId = typeof message?.id === "string" ? message.id : null;
       const blocks = message?.content ?? [];
       const toolNames = blocks
         .filter((b) => b.type === "tool_use" && typeof b.name === "string")
@@ -340,6 +346,28 @@ export class TaskManager {
       const textLen = blocks
         .filter((b) => b.type === "text")
         .reduce((a, b) => a + (typeof b.text === "string" ? (b.text as string).length : 0), 0);
+
+      // Same message id = continuation of the same API response (stream-json
+      // splits content blocks across events). Merge into the previous turn.
+      const isContinuation =
+        messageId !== null && messageId === this.lastMessageId && this.currentTurns.length > 0;
+
+      if (isContinuation) {
+        const last = this.currentTurns[this.currentTurns.length - 1];
+        if (toolNames.length) last.tools.push(...toolNames);
+        const u = message?.usage;
+        if (u) {
+          last.input_tokens = (u.input_tokens as number) || last.input_tokens;
+          last.output_tokens = (u.output_tokens as number) || last.output_tokens;
+          last.cache_read_tokens = (u.cache_read_input_tokens as number) || last.cache_read_tokens;
+          last.cache_creation_tokens = (u.cache_creation_input_tokens as number) || last.cache_creation_tokens;
+        }
+        last.latency_ms = Date.now() - this.currentTurnStart;
+        return;
+      }
+
+      this.turnCount++;
+      this.lastMessageId = messageId;
       const summary = toolNames.length > 0 ? `tool=${toolNames.join(",")}` : `text=${textLen}ch`;
       const model = this.currentModel ?? "?";
       this.lastActivity = `turn ${this.turnCount} ${summary}`;
