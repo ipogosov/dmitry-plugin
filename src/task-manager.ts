@@ -129,10 +129,13 @@ export class TaskManager {
     const req = this.queue[0];
     let modelSwitched = false;
 
-    // Model change — kill existing instance, respawn on the new model
+    // Model change — kill existing instance, respawn on the new model.
+    // WHY shift before kill: kill() iterates and rejects every queued request.
+    // If req is still in queue when kill runs, its promise is settled as
+    // rejected, and the later activeRequest.resolve() on the result is a no-op.
     if (this.proc && this.currentModel !== req.model) {
+      this.queue.shift();
       this.kill(`model switch ${this.currentModel} → ${req.model}`);
-      // queue was flushed by kill(); re-enqueue this one request
       this.queue.unshift(req);
       modelSwitched = true;
     }
