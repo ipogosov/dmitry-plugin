@@ -16,6 +16,12 @@ interface Pending {
   tool: string;
 }
 
+// Grace window after a dmitry_task timeout: how long we keep the pending
+// entry alive waiting for the worker's cancel-triggered partial-result reply.
+// 5 s is enough for task.cancel() to SIGTERM the CLI, build the partial, and
+// send it back over IPC; longer would just delay the eventual rejection.
+const CANCEL_GRACE_MS = 5_000;
+
 interface ResultMessage {
   id: string;
   kind: "result";
@@ -38,10 +44,25 @@ export class Dispatcher {
     await this.ensureReady();
     const id = String(++this.seq);
     return new Promise<string>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new Error(`${tool}: dispatcher timed out after ${timeoutMs}ms`));
-      }, timeoutMs);
+      // Two-stage timeout for dmitry_task: at timeoutMs we send {kind:"cancel"}
+      // to the worker (which resolves the subagent's active request with a
+      // partial-result marker), then wait CANCEL_GRACE_MS for that reply before
+      // giving up. For other tools, the timeout is a hard reject as before.
+      const onTimeout = () => {
+        if (tool === "dmitry_task") {
+          try { this.proc?.send({ id, kind: "cancel", tool, timeout_ms: timeoutMs }); } catch { /* worker dead; grace timer still fires */ }
+          const graceTimer = setTimeout(() => {
+            this.pending.delete(id);
+            reject(new Error(`${tool}: dispatcher timed out after ${timeoutMs}ms (cancel grace elapsed)`));
+          }, CANCEL_GRACE_MS);
+          const entry = this.pending.get(id);
+          if (entry) entry.timer = graceTimer;
+        } else {
+          this.pending.delete(id);
+          reject(new Error(`${tool}: dispatcher timed out after ${timeoutMs}ms`));
+        }
+      };
+      const timer = setTimeout(onTimeout, timeoutMs);
       this.pending.set(id, { resolve, reject, timer, tool });
       try {
         this.proc!.send({ id, kind: "call", tool, params });

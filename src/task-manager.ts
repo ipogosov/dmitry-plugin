@@ -89,6 +89,7 @@ export class TaskManager {
   private activeRequest: { resolve: (v: TaskResult) => void; reject: (e: Error) => void; modelSwitched: boolean } | null = null;
   private idleTimer: NodeJS.Timeout | null = null;
   private turnCount = 0;
+  private lastActivity = "";
 
   async send(message: string, model: TaskModel): Promise<TaskResult> {
     return new Promise<TaskResult>((resolve, reject) => {
@@ -118,6 +119,34 @@ export class TaskManager {
 
   isAlive(): boolean {
     return this.proc !== null;
+  }
+
+  // Dispatcher-side timeout cancellation. Unlike kill(), resolves the active
+  // request with a partial-result marker so the caller can still see what the
+  // subagent did (files on disk, commits made) before the cancel landed.
+  // Returns true if there was an active request to cancel.
+  cancel(timeoutMs: number): boolean {
+    if (!this.activeRequest) return false;
+    const partial = [
+      `[DMITRY_TIMEOUT after ${timeoutMs}ms — partial result, subagent killed]`,
+      `Turns completed: ${this.turnCount}`,
+      `Last activity: ${this.lastActivity || "(no assistant turns yet)"}`,
+      "Files written and commits made before this point are on disk — verify via git log / filesystem before redispatching.",
+    ].join("\n");
+    const req = this.activeRequest;
+    this.activeRequest = null;
+    req.resolve({ result: partial, usage: null, model_switched: req.modelSwitched });
+    if (this.proc) {
+      this.proc.kill("SIGTERM");
+      this.proc = null;
+      this.currentModel = null;
+      this.buffer = "";
+      this.busy = false;
+      this.clearIdleTimer();
+    }
+    // Keep queue intact: any follow-up caller gets a fresh process via drain().
+    this.drain();
+    return true;
   }
 
   currentModelName(): TaskModel | null {
@@ -195,6 +224,7 @@ export class TaskManager {
     this.proc = child;
     this.currentModel = model;
     this.turnCount = 0;
+    this.lastActivity = "";
 
     child.stdout!.on("data", (chunk: Buffer) => {
       this.handleData(chunk.toString());
@@ -269,6 +299,7 @@ export class TaskManager {
         .reduce((a, b) => a + (typeof b.text === "string" ? (b.text as string).length : 0), 0);
       const summary = toolNames.length > 0 ? `tool=${toolNames.join(",")}` : `text=${textLen}ch`;
       const model = this.currentModel ?? "?";
+      this.lastActivity = `turn ${this.turnCount} ${summary}`;
       process.stderr.write(`[dmitry.task] turn ${this.turnCount} model=${model} ${summary}\n`);
       return;
     }

@@ -39,6 +39,8 @@ process.on("unhandledRejection", (reason) => { logWorkerError("unhandledRejectio
 process.on("uncaughtException",  (err)    => { logWorkerError("uncaughtException",  err);    });
 
 type CallMessage = { id: string; kind: "call"; tool: string; params: Record<string, unknown> };
+type CancelMessage = { id: string; kind: "cancel"; tool: string; timeout_ms: number };
+type IncomingMessage = CallMessage | CancelMessage;
 
 async function dispatch(tool: string, params: Record<string, unknown>): Promise<string> {
   switch (tool) {
@@ -77,8 +79,17 @@ function logHandlerError(tool: string, params: Record<string, unknown>, err: unk
 }
 
 process.on("message", (raw: unknown) => {
-  const msg = raw as CallMessage | null;
-  if (!msg || msg.kind !== "call") return;
+  const msg = raw as IncomingMessage | null;
+  if (!msg) return;
+  if (msg.kind === "cancel") {
+    // Dispatcher-initiated cancel (e.g. on timeout). Scope: dmitry_task only.
+    // task.cancel() resolves the in-flight activeRequest with a partial-result
+    // marker; the pending dispatch() promise then resolves normally and the
+    // final {ok:true, result: "[DMITRY_TIMEOUT...]"} goes back over IPC.
+    if (msg.tool === "dmitry_task") task.cancel(msg.timeout_ms);
+    return;
+  }
+  if (msg.kind !== "call") return;
   const { id, tool, params } = msg;
   const start = Date.now();
   dispatch(tool, params ?? {}).then(
