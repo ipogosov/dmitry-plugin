@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { IS_WIN, buildRtkSettings, EMPTY_PLUGIN_DIR } from "./platform.js";
-import { extractUsage, type Usage } from "./logger.js";
+import { extractUsage, logHeartbeat, type Usage } from "./logger.js";
 
 const RTK_SETTINGS = buildRtkSettings();
 
@@ -315,6 +315,12 @@ export class TaskManager {
       const model = this.currentModel ?? "?";
       this.lastActivity = `turn ${this.turnCount} ${summary}`;
       process.stderr.write(`[dmitry.task] turn ${this.turnCount} model=${model} ${summary}\n`);
+      logHeartbeat({
+        ts: new Date().toISOString(),
+        turn: this.turnCount,
+        model,
+        summary,
+      });
       return;
     }
 

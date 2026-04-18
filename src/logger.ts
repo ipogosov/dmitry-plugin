@@ -75,3 +75,21 @@ export function log(entry: Omit<LogEntry, "session">): void {
   const path = join(LOG_DIR, `${date}.jsonl`);
   appendFileSync(path, JSON.stringify({ ...entry, session: SESSION_ID }) + "\n");
 }
+
+// Heartbeat lives in its own daily file so stats.ts aggregation isn't polluted.
+// Operator reads via `tail -f ~/.dmitry/logs/heartbeat-$(date +%F).jsonl` during
+// long dispatches. WHY separate from stderr: Claude Code on current versions
+// discards MCP server stderr; a file is the only user-visible channel.
+export interface HeartbeatEntry {
+  ts: string;
+  session: string;
+  turn: number;
+  model: "haiku" | "sonnet" | "opus" | "?";
+  summary: string;
+}
+
+export function logHeartbeat(entry: Omit<HeartbeatEntry, "session">): void {
+  const date = entry.ts.slice(0, 10);
+  const path = join(LOG_DIR, `heartbeat-${date}.jsonl`);
+  appendFileSync(path, JSON.stringify({ ...entry, session: SESSION_ID }) + "\n");
+}
