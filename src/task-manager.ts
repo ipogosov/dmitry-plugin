@@ -46,13 +46,14 @@ const SYSTEM_PROMPT = [
   "- Re-Read before Edit ONLY when: (a) a Bash command, git operation, or another actor may have touched the file since your last Read, or (b) more than ~10 turns have passed since your last Read.",
   "- If Edit fails because the expected content is gone, STOP and report the mismatch — do not improvise or merge.",
   "",
-  "VERIFY YOUR WORK:",
-  "- After any code change, run the project's verification and include the result in your report.",
+  "VERIFY ONCE AT THE END:",
+  "- Run the project's verification ONCE, after ALL edits for this task are complete. Do NOT re-run it after each individual edit.",
   "- Default order when the task doesn't specify: typecheck → build → test. Pick whichever exists, stop at the first that gives a meaningful signal.",
   "- If CLAUDE.md at the project root specifies verification commands, use those instead.",
-  "- If verification fails AND the failure was caused by your change: fix it. That's in scope.",
+  "- If verification fails AND the failure was caused by your change: fix the root cause in one focused pass, then re-run verification ONCE more. Do not iterate tests > twice.",
   "- If verification fails AND the failure existed before your change: report it, do NOT fix it.",
   "- Do NOT run unrelated commands (cleanup scripts, deploys, formatters the task didn't ask for).",
+  "- Do NOT run git status / git log / ls / find as 'sanity checks' between edits — trust the tool results you already have.",
   "",
   "CONTEXT: persistent session — context accumulates across calls.",
   "- If you already read a file this session and it's unchanged, reference it instead of re-dumping.",
@@ -97,6 +98,11 @@ export class TaskManager {
   private currentDispatchId: string | null = null;
   private currentDispatchStart = 0;
   private currentDispatchTaskPreview = "";
+  // Absolute timestamp of the end of the previous turn (or dispatch start for
+  // turn 1). A turn's latency_ms is the span from this marker to the last event
+  // of that turn. Advanced only when a NEW turn arrives — NOT at the first
+  // event of the current turn — otherwise continuation events would overwrite
+  // the between-turn portion of latency_ms.
   private currentTurnStart = 0;
   private currentTurns: TurnProfile[] = [];
   // Dedup key for per-turn profiling. stream-json can emit one `assistant` event
@@ -104,6 +110,11 @@ export class TaskManager {
   // Counting each as a turn inflates token totals N×. We merge events sharing
   // an id into a single turn.
   private lastMessageId: string | null = null;
+  // Silent-retry detector: count consecutive new turns that have no tool_use
+  // and empty text. 2+ in a row is the CLI retry pattern (each retry gets a
+  // fresh message.id, so the dedup above doesn't catch it). Observed eating
+  // ~400s per retry on long-output tasks.
+  private consecutiveEmptyTurns = 0;
 
   async send(message: string, model: TaskModel, context1M = false): Promise<TaskResult> {
     return new Promise<TaskResult>((resolve, reject) => {
@@ -209,6 +220,7 @@ export class TaskManager {
     this.currentTurns = [];
     this.currentTurnStart = this.currentDispatchStart;
     this.lastMessageId = null;
+    this.consecutiveEmptyTurns = 0;
 
     const input =
       JSON.stringify({
@@ -378,8 +390,32 @@ export class TaskManager {
         model,
         summary,
       });
+
+      // Silent retry detector: new turn with no tool_use and no visible text.
+      // On the second such turn in a row, warn — this is the CLI retrying a
+      // long-output response. Each retry burns ~400s before giving up.
+      const isEmpty = toolNames.length === 0 && textLen === 0;
+      if (isEmpty) {
+        this.consecutiveEmptyTurns++;
+        if (this.consecutiveEmptyTurns >= 2) {
+          process.stderr.write(
+            `[dmitry.task] WARN silent retry pattern: ${this.consecutiveEmptyTurns} consecutive empty-text turns (turn ${this.turnCount}, model=${model})\n`,
+          );
+        }
+      } else {
+        this.consecutiveEmptyTurns = 0;
+      }
+
       if (this.currentDispatchId) {
         const now = Date.now();
+        // Advance currentTurnStart to the END of the previous turn. Its last
+        // event was at currentTurnStart + prev.latency_ms. This keeps
+        // continuation updates to last.latency_ms (now - currentTurnStart)
+        // correct: they measure from prev-turn-end through the continuation.
+        if (this.currentTurns.length > 0) {
+          const prev = this.currentTurns[this.currentTurns.length - 1];
+          this.currentTurnStart += prev.latency_ms;
+        }
         const u = message?.usage;
         this.currentTurns.push({
           turn: this.turnCount,
@@ -390,7 +426,6 @@ export class TaskManager {
           cache_creation_tokens: (u?.cache_creation_input_tokens as number) || 0,
           tools: toolNames,
         });
-        this.currentTurnStart = now;
       }
       return;
     }

@@ -1,3 +1,4 @@
+// JSONL logger for dmitry MCP — ~/.dmitry/logs/{date}.jsonl
 import { appendFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -80,7 +81,7 @@ export function log(entry: Omit<LogEntry, "session">): void {
 // Operator reads via `tail -f ~/.dmitry/logs/heartbeat-$(date +%F).jsonl` during
 // long dispatches. WHY separate from stderr: Claude Code on current versions
 // discards MCP server stderr; a file is the only user-visible channel.
-export interface HeartbeatEntry {
+export interface HeartbeatLogEntry {
   ts: string;
   session: string;
   turn: number;
@@ -88,7 +89,7 @@ export interface HeartbeatEntry {
   summary: string;
 }
 
-export function logHeartbeat(entry: Omit<HeartbeatEntry, "session">): void {
+export function logHeartbeat(entry: Omit<HeartbeatLogEntry, "session">): void {
   const date = entry.ts.slice(0, 10);
   const path = join(LOG_DIR, `heartbeat-${date}.jsonl`);
   appendFileSync(path, JSON.stringify({ ...entry, session: SESSION_ID }) + "\n");
