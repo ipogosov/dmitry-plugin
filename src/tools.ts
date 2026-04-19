@@ -355,8 +355,8 @@ export async function handleTask(
   }
 
   const model: TaskModel = params.model ?? "sonnet";
-  const { result: raw_result, usage, model_switched } = await task.send(params.task, model, params.context_1m === true);
+  const { result: raw_result, usage, model_switched, context_1m } = await task.send(params.task, model, params.context_1m === true);
   const result = stripMarkdown(raw_result);
-  log({ ts: new Date().toISOString(), tool: "dmitry_task", input: params.task, route: "haiku", input_len: params.task.length, output_len: result.length, output: result.slice(0, 3000), duration_ms: Date.now() - start, usage: usage ?? undefined, model, model_switched });
+  log({ ts: new Date().toISOString(), tool: "dmitry_task", input: params.task, route: "haiku", input_len: params.task.length, output_len: result.length, output: result.slice(0, 3000), duration_ms: Date.now() - start, usage: usage ?? undefined, model, model_switched, context_1m });
   return result;
 }

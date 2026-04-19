@@ -5,7 +5,7 @@
   "main": "plugins/dmitry/server/dmitry.mjs",
   "scripts": {
     "build": "tsc",
-    "bundle": "esbuild src/index.ts --bundle --platform=node --format=esm --minify --outfile=plugins/dmitry/server/dmitry.mjs --external:node:*"
+    "bundle": "esbuild src/index.ts --bundle --platform=node --format=esm --minify --outfile=plugins/dmitry/server/dmitry.mjs --external:node:* && node scripts/sync-cache.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

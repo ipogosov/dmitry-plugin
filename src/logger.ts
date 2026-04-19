@@ -35,6 +35,7 @@ interface LogEntry {
   usage?: Usage;         // token usage from CLI response
   model?: "haiku" | "sonnet" | "opus";  // dmitry_task: which model handled the call
   model_switched?: boolean;             // dmitry_task: whether this call killed+respawned the instance
+  context_1m?: boolean;                 // dmitry_task: 1M-context dispatch (claude --model <m>[1m])
 }
 
 export function extractUsage(msg: Record<string, unknown>): Usage | null {

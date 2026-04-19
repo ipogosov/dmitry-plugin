@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { IS_WIN, buildRtkSettings, EMPTY_PLUGIN_DIR } from "./platform.js";
-import { extractUsage, logHeartbeat, logTaskProfile, type Usage, type TurnProfile } from "./logger.js";
+import { logHeartbeat, logTaskProfile, type Usage, type TurnProfile } from "./logger.js";
 
 const RTK_SETTINGS = buildRtkSettings();
 
@@ -74,6 +74,7 @@ export interface TaskResult {
   result: string;
   usage: Usage | null;
   model_switched: boolean;
+  context_1m: boolean;
 }
 
 interface PendingRequest {
@@ -162,7 +163,7 @@ export class TaskManager {
     this.emitProfile("cancelled");
     const req = this.activeRequest;
     this.activeRequest = null;
-    req.resolve({ result: partial, usage: null, model_switched: req.modelSwitched });
+    req.resolve({ result: partial, usage: null, model_switched: req.modelSwitched, context_1m: this.currentContext1M });
     if (this.proc) {
       this.proc.kill("SIGTERM");
       this.proc = null;
@@ -435,10 +436,30 @@ export class TaskManager {
     if (msg.subtype === "success") {
       this.emitProfile("success");
       if (this.activeRequest) {
+        // Sum tokens across currentTurns — which already dedupes continuation
+        // events (same message.id). The result message's own `usage` field only
+        // carries the last turn, so relying on extractUsage(msg) undercounts
+        // multi-turn dispatches and breaks stats.ts savings math. cost_usd and
+        // num_turns, however, ARE cumulative on the result message.
+        const agg: Usage = {
+          input_tokens: 0,
+          output_tokens: 0,
+          cache_read_tokens: 0,
+          cache_creation_tokens: 0,
+          cost_usd: (msg.total_cost_usd as number) || 0,
+          num_turns: (msg.num_turns as number) || 0,
+        };
+        for (const t of this.currentTurns) {
+          agg.input_tokens          += t.input_tokens;
+          agg.output_tokens         += t.output_tokens;
+          agg.cache_read_tokens     += t.cache_read_tokens;
+          agg.cache_creation_tokens += t.cache_creation_tokens;
+        }
         this.activeRequest.resolve({
           result: (msg.result as string) || "",
-          usage: extractUsage(msg),
+          usage: agg,
           model_switched: this.activeRequest.modelSwitched,
+          context_1m: this.currentContext1M,
         });
         this.activeRequest = null;
       }
