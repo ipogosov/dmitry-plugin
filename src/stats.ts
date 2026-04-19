@@ -32,14 +32,22 @@ const CHARS_PER_TOKEN = 4;
 //        have ballooned to 500-600k inline → forced compact mid-way).
 const REPORT_N_TURNS = [3, 15, 50] as const;
 
-// Bootstrap tax: every fresh subagent spawn re-caches system prompt + CLAUDE.md
-// + tool defs (~8k tokens). Inline Opus has these warm in parent cache already
-// and doesn't pay for them. This tax is part of actual subagent cost_usd; we
-// subtract it before comparing so the reasoning-cost side-by-side is fair.
-// Conservative approximation — charged per dispatch (actually only fresh spawns
-// pay it; warm-cache reuse within the 5-min idle window is free). Distortion
-// minor for typical workloads where spawn reuse rate is ~50%.
-const BOOTSTRAP_TOKENS = 8000;
+// Parent baseline context: the orchestrator's live state (history + tool
+// results + CLAUDE.md) that would be re-read on every inline Opus API turn.
+// Subagent doesn't see it, so each subagent internal turn is a parent turn
+// saved. Empirical anchor: operator reports orchestrator chats starting at
+// 35-50k, reaching 100k by 8-10 turns. 70k is a conservative lower bound
+// for a warmed-up orchestrator session. Override via env.
+const C_PARENT_BASELINE_TOKENS =
+  Number(process.env.DMITRY_STATS_PARENT_BASELINE_TOKENS) || 70_000;
+
+// Parent-side dispatch overhead: invoking an MCP tool costs parent 3 API
+// round-trips (2 pre-call framing + 1 tool_result ingestion), each re-reading
+// C_parent from parent's prompt cache. Applied to dispatches that would NOT
+// exist at all inline (delegation/research — where alternative is opus doing
+// the work directly within its own turn-flow). Filter is excluded: alt is
+// native Bash which has the same MCP-tool overhead → washes out.
+const PARENT_DISPATCH_API_TURNS = 3;
 
 function priceKey(model: SubModel, ctx1m: boolean): PriceKey {
   if (model === "haiku") return "haiku";
@@ -64,25 +72,34 @@ function filterStorageRate(N: number): number {
   return (PRICING.opus.cache_write + N * PRICING.opus.cache_read) / 1_000_000;
 }
 
-// Reasoning bucket (research + delegation): parent alternative is inline Opus.
-// calcCost(opus, usage) already pays cache_write once for cache_creation. The
-// extra cost inline Opus bears is keeping that accumulated content alive
-// across N future parent turns — cache_creation × opus.cache_read × N.
-// By delegating, the subagent dies with that context and the parent never
-// carries it. That's the savings floor we're certain of (matches the
-// operator's framing: "on subsequent turns Opus won't cache_read tokens
-// generated/read/written during another model's work"). Parent assumed to
-// run 200k-context Opus — 1M parent sessions would pay more, so this is a
-// conservative estimate of savings.
+// Storage rate for a reasoning bucket: post-work, accumulated subagent context
+// would survive in parent cache for N more turns if Opus had done it inline.
 function parentStorageRate(N: number): number {
   return PRICING.opus.cache_read * N / 1_000_000;
 }
 
-// Bootstrap cost paid by a dispatch — approximated as BOOTSTRAP_TOKENS worth
-// of cache_write at the subagent's actual rate (includes 1M surcharge).
-function bootstrapCost(model: SubModel, ctx1m: boolean): number {
-  const p = PRICING[priceKey(model, ctx1m)];
-  return BOOTSTRAP_TOKENS * p.cache_write / 1_000_000;
+// Reasoning bucket (research + delegation): parent alternative is inline Opus.
+// Three cost terms go into opus_inline:
+//   reasoning       — direct token extrapolation at opus[_1m] rates.
+//   baseline_reread — num_turns × C_parent × cache_read: each inline turn
+//                     re-reads the orchestrator's baseline state, which the
+//                     subagent doesn't see.
+//   storage(N)      — cache_creation × cache_read × N: accumulated work stays
+//                     alive in parent cache for N turns after the work ends.
+// Actual delegation cost gets two add-ons on top of subagent cost_usd:
+//   dispatch_api    — 3 parent turns re-read C_parent to invoke/receive tool.
+//   result_write    — parent cache_writes the tool_result (subagent output)
+//                     once when it arrives.
+function opusBaselineReread(numTurns: number): number {
+  return numTurns * C_PARENT_BASELINE_TOKENS * PRICING.opus.cache_read / 1_000_000;
+}
+
+function parentDispatchApiCost(): number {
+  return PARENT_DISPATCH_API_TURNS * C_PARENT_BASELINE_TOKENS * PRICING.opus.cache_read / 1_000_000;
+}
+
+function parentResultWriteCost(outputTokens: number): number {
+  return outputTokens * PRICING.opus.cache_write / 1_000_000;
 }
 
 function formatSize(bytes: number): string {
@@ -102,8 +119,15 @@ interface LogEntry {
   context_1m?: boolean;
 }
 
-interface FilterCall { raw: number; out: number; actualCost: number; bootstrap: number; }
-interface ReasoningCall { usage: Usage; actualCost: number; model: SubModel; ctx1m: boolean; bootstrap: number; }
+interface FilterCall { raw: number; out: number; actualCost: number; }
+interface ReasoningCall {
+  usage: Usage;
+  actualCost: number;
+  model: SubModel;
+  ctx1m: boolean;
+  numTurns: number;
+  outputTokens: number;
+}
 
 interface FilterSummary { count: number; raw: number; out: number; actual: number; saved: number[]; }
 interface ReasoningByModel { count: number; actual: number; opusInline: number[]; saved: number[]; }
@@ -116,27 +140,29 @@ interface ReasoningSummary {
 }
 
 function filterSummary(items: FilterCall[]): FilterSummary {
-  let raw = 0, out = 0, actual = 0, bootstrap = 0;
-  for (const it of items) { raw += it.raw; out += it.out; actual += it.actualCost; bootstrap += it.bootstrap; }
+  let raw = 0, out = 0, actual = 0;
+  for (const it of items) { raw += it.raw; out += it.out; actual += it.actualCost; }
   const deltaTokens = (raw - out) / CHARS_PER_TOKEN;
-  const effectiveActual = actual - bootstrap;
-  const saved = REPORT_N_TURNS.map(N => deltaTokens * filterStorageRate(N) - effectiveActual);
+  const saved = REPORT_N_TURNS.map(N => deltaTokens * filterStorageRate(N) - actual);
   return { count: items.length, raw, out, actual, saved };
 }
 
 function reasoningSummary(items: ReasoningCall[]): ReasoningSummary {
   const byModel: ReasoningSummary["byModel"] = {};
-  let actual = 0, bootstrap = 0;
+  let delegationCost = 0;
   const opusInline = REPORT_N_TURNS.map(() => 0);
 
   for (const it of items) {
     const reasoning = calcCost(priceKey("opus", it.ctx1m), it.usage);
+    const baselineReread = opusBaselineReread(it.numTurns);
     const inlineAt = REPORT_N_TURNS.map(
-      N => reasoning + it.usage.cache_creation_tokens * parentStorageRate(N),
+      N => reasoning + baselineReread + it.usage.cache_creation_tokens * parentStorageRate(N),
     );
 
-    actual += it.actualCost;
-    bootstrap += it.bootstrap;
+    const dispatchOverhead = parentDispatchApiCost() + parentResultWriteCost(it.outputTokens);
+    const itemDelegation = it.actualCost + dispatchOverhead;
+
+    delegationCost += itemDelegation;
     inlineAt.forEach((v, i) => { opusInline[i] += v; });
 
     const slot = byModel[it.model] ?? (byModel[it.model] = {
@@ -145,24 +171,17 @@ function reasoningSummary(items: ReasoningCall[]): ReasoningSummary {
       saved: REPORT_N_TURNS.map(() => 0),
     });
     slot.count++;
-    slot.actual += it.actualCost;
+    slot.actual += itemDelegation;
     inlineAt.forEach((v, i) => { slot.opusInline[i] += v; });
-    // Per-model bootstrap accumulates by reusing a dedicated slot field —
-    // tracked separately so we can subtract before computing saved[].
-    (slot as ReasoningByModel & { _bootstrap?: number })._bootstrap =
-      ((slot as ReasoningByModel & { _bootstrap?: number })._bootstrap ?? 0) + it.bootstrap;
   }
 
   for (const slot of Object.values(byModel)) {
     if (!slot) continue;
-    const slotBootstrap = (slot as ReasoningByModel & { _bootstrap?: number })._bootstrap ?? 0;
-    const effective = slot.actual - slotBootstrap;
-    slot.saved = slot.opusInline.map(v => v - effective);
+    slot.saved = slot.opusInline.map(v => v - slot.actual);
   }
 
-  const effectiveActual = actual - bootstrap;
-  const saved = opusInline.map(v => v - effectiveActual);
-  return { count: items.length, actual, opusInline, saved, byModel };
+  const saved = opusInline.map(v => v - delegationCost);
+  return { count: items.length, actual: delegationCost, opusInline, saved, byModel };
 }
 
 // p95 split — rate-independent outlier rank.
@@ -253,14 +272,15 @@ export function computeStats(period: "today" | "week" | "all"): string {
     if (e.route !== "haiku") continue;
 
     const ctx1m = e.context_1m === true;
-    const bootstrap = bootstrapCost(model, ctx1m);
+    const numTurns = e.usage.num_turns || 0;
+    const outputTokens = Math.round(e.output_len / CHARS_PER_TOKEN);
 
     if ((e.tool === "dmitry_exec" || e.tool === "dmitry_test") && e.raw_len != null) {
-      filterCalls.push({ raw: e.raw_len, out: e.output_len, actualCost: e.usage.cost_usd, bootstrap });
+      filterCalls.push({ raw: e.raw_len, out: e.output_len, actualCost: e.usage.cost_usd });
     } else if (e.tool === "dmitry_task") {
-      delegationCalls.push({ usage: e.usage, actualCost: e.usage.cost_usd, model, ctx1m, bootstrap });
+      delegationCalls.push({ usage: e.usage, actualCost: e.usage.cost_usd, model, ctx1m, numTurns, outputTokens });
     } else if (e.tool === "dmitry_ask" || e.tool === "dmitry_web" || e.tool === "dmitry_doc") {
-      researchCalls.push({ usage: e.usage, actualCost: e.usage.cost_usd, model, ctx1m: false, bootstrap: bootstrapCost(model, false) });
+      researchCalls.push({ usage: e.usage, actualCost: e.usage.cost_usd, model, ctx1m: false, numTurns, outputTokens });
     }
   }
 
@@ -360,11 +380,12 @@ export function computeStats(period: "today" | "week" | "all"): string {
   }
 
   lines.push("");
-  lines.push(`Assumptions: 1 token ≈ ${CHARS_PER_TOKEN} chars.`);
-  lines.push(`  filter:     saved(N) = (raw − out) × (opus.cache_write + N × opus.cache_read) − (actual − bootstrap).`);
-  lines.push(`  research/   saved(N) = calcCost(opus[_1m], usage) + cache_creation × opus.cache_read × N − (actual − bootstrap).`);
-  lines.push(`  delegation  (context_1m toggles opus vs opus_1m for reasoning rates).`);
-  lines.push(`  bootstrap: each dispatch charges ${BOOTSTRAP_TOKENS} tokens × model[_1m].cache_write (sysprompt+CLAUDE.md+tools re-cache).`);
+  lines.push(`Assumptions: 1 token ≈ ${CHARS_PER_TOKEN} chars. C_parent = ${C_PARENT_BASELINE_TOKENS.toLocaleString()} tokens (orchestrator baseline).`);
+  lines.push(`  filter:     saved(N) = (raw − out) × (opus.cache_write + N × opus.cache_read) − actual.`);
+  lines.push(`  research/   opus_inline(N) = calcCost(opus[_1m], usage) + num_turns × C_parent × opus.cache_read`);
+  lines.push(`  delegation               + cache_creation × opus.cache_read × N.`);
+  lines.push(`              delegation_cost = actual + ${PARENT_DISPATCH_API_TURNS} × C_parent × opus.cache_read + out_tokens × opus.cache_write.`);
+  lines.push(`              saved(N) = opus_inline(N) − delegation_cost.  (context_1m toggles opus vs opus_1m).`);
   lines.push(`  N = parent turns after dispatch. 50 anchors long orchestrator sessions; linear model; doesn't price compact prevention.`);
   lines.push(`p95 = bottom 95% of calls (typical load), top5% = outlier spikes, ranked by per-call impact.`);
 
