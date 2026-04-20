@@ -5,6 +5,7 @@ import { execFile } from "node:child_process";
 import { oneshot } from "./oneshot.js";
 import { log } from "./logger.js";
 import { IS_WIN } from "./platform.js";
+import { detectShellMismatch, reportTrailer } from "./failure-reporter.js";
 import { readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -112,6 +113,28 @@ const FILTER_SYSTEM_PROMPT = [
   "CRITICAL: Never write memory files. Never use the Write tool on any path under ~/.claude/.",
 ].join("\n");
 
+// If the raw shell output shows an interpreter-level error (bash syntax hitting
+// PowerShell, "command not recognized", etc.) append a failure-report trailer so
+// the operator can file an issue in one click. Returning raw means trailer text
+// must not leak into Haiku's filter prompt — apply it only to the final reply.
+function maybeTrailerForExec(
+  tool: string,
+  raw: string,
+  command: string,
+  exitCode: number,
+  finalText: string,
+): string {
+  if (!detectShellMismatch(raw)) return finalText;
+  return finalText + reportTrailer({
+    tool,
+    kind: "shell_mismatch",
+    error_message: "Shell refused the command (interpreter-level error detected in stderr).",
+    input_preview: command,
+    stderr_preview: raw,
+    exit_code: exitCode,
+  });
+}
+
 function rtkRewrite(command: string): Promise<string | null> {
   return new Promise((resolve) => {
     execFile("rtk", ["rewrite", command], { timeout: 5000, ...(IS_WIN && { shell: true }) }, (err, stdout) => {
@@ -141,7 +164,7 @@ export async function handleExec(
     // Short output — return raw, no filter cost
     if (lineCount < 10) {
       log({ ts: new Date().toISOString(), tool: "dmitry_exec", input: command, route: "rtk", input_len: command.length, output_len: result.length, exit_code: exitCode, rtk_cmd: rtkCmd, output: result.slice(0, 1000), duration_ms: Date.now() - start });
-      return result;
+      return maybeTrailerForExec("dmitry_exec", result, command, exitCode, result);
     }
 
     // Oversize — fail fast rather than dump megabytes into parent context
@@ -166,7 +189,7 @@ export async function handleExec(
     const { result: raw_filtered, usage: rtk_usage } = await oneshot(filterPrompt, { timeout: timeout ?? 60_000, systemPrompt: FILTER_SYSTEM_PROMPT, tools: "", replaceSystemPrompt: true });
     const filtered = stripMarkdown(raw_filtered);
     log({ ts: new Date().toISOString(), tool: "dmitry_exec", input: command, route: "rtk-haiku", input_len: command.length, raw_len: result.length, output_len: filtered.length, exit_code: exitCode, rtk_cmd: rtkCmd, output: filtered.slice(0, 3000), duration_ms: Date.now() - start, usage: rtk_usage ?? undefined });
-    return filtered;
+    return maybeTrailerForExec("dmitry_exec", result, command, exitCode, filtered);
   }
 
   // RTK doesn't cover — run raw
@@ -176,7 +199,7 @@ export async function handleExec(
   // Short output — return as-is
   if (lineCount < 10) {
     log({ ts: new Date().toISOString(), tool: "dmitry_exec", input: command, route: "short", input_len: command.length, output_len: raw.length, exit_code: exitCode, output: raw.slice(0, 1000), duration_ms: Date.now() - start });
-    return raw;
+    return maybeTrailerForExec("dmitry_exec", raw, command, exitCode, raw);
   }
 
   // Guard: Haiku filter can't handle inputs bigger than its context window.
@@ -203,7 +226,7 @@ export async function handleExec(
   const { result: raw_result, usage } = await oneshot(prompt, { timeout: timeout ?? 60_000, systemPrompt: FILTER_SYSTEM_PROMPT, tools: "", replaceSystemPrompt: true });
   const result = stripMarkdown(raw_result);
   log({ ts: new Date().toISOString(), tool: "dmitry_exec", input: command, route: "haiku", input_len: command.length, raw_len: raw.length, output_len: result.length, exit_code: exitCode, output: result.slice(0, 3000), duration_ms: Date.now() - start, usage: usage ?? undefined });
-  return result;
+  return maybeTrailerForExec("dmitry_exec", raw, command, exitCode, result);
 }
 
 export async function handleAsk(
@@ -305,7 +328,7 @@ export async function handleTest(params: { command: string; timeout?: number }):
   // Short output — return as-is
   if (lineCount < 20) {
     log({ ts: new Date().toISOString(), tool: "dmitry_test", input: params.command, route: "short", input_len: params.command.length, output_len: raw.length, exit_code: exitCode, duration_ms: Date.now() - start });
-    return raw;
+    return maybeTrailerForExec("dmitry_test", raw, params.command, exitCode, raw);
   }
 
   // Long output — filter through Haiku, keep only failures
@@ -320,7 +343,7 @@ export async function handleTest(params: { command: string; timeout?: number }):
   const { result: raw_result, usage } = await oneshot(prompt, { timeout: params.timeout ?? 120_000, systemPrompt: FILTER_SYSTEM_PROMPT, tools: "", replaceSystemPrompt: true });
   const result = stripMarkdown(raw_result);
   log({ ts: new Date().toISOString(), tool: "dmitry_test", input: params.command, route: "haiku", input_len: params.command.length, raw_len: raw.length, output_len: result.length, exit_code: exitCode, output: result.slice(0, 3000), duration_ms: Date.now() - start, usage: usage ?? undefined });
-  return result;
+  return maybeTrailerForExec("dmitry_test", raw, params.command, exitCode, result);
 }
 
 export function handleAskKill(cli: CliManager): string {

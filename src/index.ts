@@ -23,6 +23,7 @@ async function runServer(): Promise<void> {
   const { IS_WIN } = await import("./platform.js");
   const { computeStats } = await import("./stats.js");
   const { log } = await import("./logger.js");
+  const { classifyThrown, reportTrailer } = await import("./failure-reporter.js");
 
   // Safety net. If anything reaches this handler it is already a bug — the
   // dispatcher is supposed to absorb every handler error — but we keep the
@@ -58,13 +59,24 @@ async function runServer(): Promise<void> {
   // Thin adapter: every tool is `dispatcher.run(name, params, timeout)`.
   // Error path: dispatcher rejects → we return a text error to the MCP client.
   // The pipe stays open regardless of what happened inside the worker.
+  const inputPreview = (params: Record<string, unknown>): string | undefined => {
+    const v = (params.command ?? params.task) as unknown;
+    return typeof v === "string" ? v : undefined;
+  };
+
   const wrap = (tool: string, timeoutMs: number) => async (params: Record<string, unknown>) => {
     try {
       const result = await dispatcher.run(tool, params, timeoutMs);
       return { content: [{ type: "text" as const, text: result }] };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      return { content: [{ type: "text" as const, text: `Error: ${msg}` }] };
+      const trailer = reportTrailer({
+        tool,
+        kind: classifyThrown(err),
+        error_message: msg,
+        input_preview: inputPreview(params),
+      });
+      return { content: [{ type: "text" as const, text: `Error: ${msg}${trailer}` }] };
     }
   };
 
@@ -173,7 +185,13 @@ async function runServer(): Promise<void> {
         return { content: [{ type: "text" as const, text: result }] };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        return { content: [{ type: "text" as const, text: `Error: ${msg}` }] };
+        const trailer = reportTrailer({
+          tool: "dmitry_task",
+          kind: classifyThrown(err),
+          error_message: msg,
+          input_preview: typeof params.task === "string" ? params.task : undefined,
+        });
+        return { content: [{ type: "text" as const, text: `Error: ${msg}${trailer}` }] };
       }
     },
   );
