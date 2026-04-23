@@ -56,6 +56,16 @@ async function runServer(): Promise<void> {
   const TIMEOUT_TASK_MAX = 1_800_000;
   const TIMEOUT_TASK_MIN = 60_000;
 
+  // Upper cap when user passes a long shell `timeout` for exec/test. Dispatcher
+  // must cover the shell phase (user timeout) + Haiku filter (HAIKU_FILTER_MS)
+  // + IPC slack. Without this, a user passing timeout=600_000 hits the 120s
+  // dispatcher ceiling and the worker gets killed mid-shell despite honoring
+  // the user's budget internally.
+  const HAIKU_FILTER_MS = 90_000;          // keep in sync with tools.ts HAIKU_FILTER_TIMEOUT_MS
+  const DISPATCHER_SLACK_MS = 15_000;
+  const TIMEOUT_EXEC_CAP = 1_800_000;      // 30 min max total exec budget
+  const TIMEOUT_TEST_CAP = 1_800_000;      // 30 min max total test budget
+
   // Thin adapter: every tool is `dispatcher.run(name, params, timeout)`.
   // Error path: dispatcher rejects → we return a text error to the MCP client.
   // The pipe stays open regardless of what happened inside the worker.
@@ -64,7 +74,20 @@ async function runServer(): Promise<void> {
     return typeof v === "string" ? v : undefined;
   };
 
-  const wrap = (tool: string, timeoutMs: number) => async (params: Record<string, unknown>) => {
+  // Compute the dispatcher timeout for a single tool call. If the tool accepts
+  // a user `timeout` (exec, test) and the user passed one, the dispatcher waits
+  // for the full shell budget plus the Haiku filter budget plus IPC slack,
+  // bounded by capMs. If the user didn't pass anything, fall back to the tool's
+  // default ceiling.
+  const resolveTimeout = (params: Record<string, unknown>, defaultMs: number, capMs: number): number => {
+    const userMs = typeof params.timeout === "number" ? params.timeout : undefined;
+    if (userMs === undefined) return defaultMs;
+    const needed = userMs + HAIKU_FILTER_MS + DISPATCHER_SLACK_MS;
+    return Math.min(needed, capMs);
+  };
+
+  const wrap = (tool: string, defaultMs: number, capMs: number = defaultMs) => async (params: Record<string, unknown>) => {
+    const timeoutMs = resolveTimeout(params, defaultMs, capMs);
     try {
       const result = await dispatcher.run(tool, params, timeoutMs);
       return { content: [{ type: "text" as const, text: result }] };
@@ -93,7 +116,7 @@ async function runServer(): Promise<void> {
       command: z.string().describe("Bash command to execute"),
       timeout: z.number().optional().describe("Timeout in ms (default: 60000)"),
     },
-    wrap("dmitry_exec", TIMEOUT_EXEC),
+    wrap("dmitry_exec", TIMEOUT_EXEC, TIMEOUT_EXEC_CAP),
   );
 
   server.tool(
@@ -164,7 +187,7 @@ async function runServer(): Promise<void> {
       command: z.string().describe("Test command to run (e.g. 'npm test', 'cargo test')"),
       timeout: z.number().optional().describe("Timeout in ms (default: 120000)"),
     },
-    wrap("dmitry_test", TIMEOUT_TEST),
+    wrap("dmitry_test", TIMEOUT_TEST, TIMEOUT_TEST_CAP),
   );
 
   server.tool(

@@ -20,6 +20,12 @@ const DMITRY_IMPORT_RE = /^@dmitry\.md\s*\r?\n?/m;
 // (conservative for logs/code mixes) to convert back to characters.
 const MAX_HAIKU_FILTER_INPUT_CHARS = Math.floor(200_000 * 3 * 0.95);
 
+// Haiku filter budget. Independent of the user's shell `timeout` — the filter
+// is a short summarization task that runs at Haiku latency regardless of how
+// long the underlying command ran. 90s covers the p99 observed in logs; the
+// old coupling to user-timeout masked the filter budget behind shell duration.
+const HAIKU_FILTER_TIMEOUT_MS = 90_000;
+
 // Bump this marker whenever DMITRY_MD_CONTENT changes — sessions detecting a
 // stale or missing marker will rewrite ~/.claude/dmitry.md from the constant.
 const DMITRY_MD_VERSION_MARKER = "<!-- dmitry-md v3 -->";
@@ -186,7 +192,7 @@ export async function handleExec(
       result,
     ].join("\n");
 
-    const { result: raw_filtered, usage: rtk_usage } = await oneshot(filterPrompt, { timeout: timeout ?? 60_000, systemPrompt: FILTER_SYSTEM_PROMPT, tools: "", replaceSystemPrompt: true });
+    const { result: raw_filtered, usage: rtk_usage } = await oneshot(filterPrompt, { timeout: HAIKU_FILTER_TIMEOUT_MS, systemPrompt: FILTER_SYSTEM_PROMPT, tools: "", replaceSystemPrompt: true });
     const filtered = stripMarkdown(raw_filtered);
     log({ ts: new Date().toISOString(), tool: "dmitry_exec", input: command, route: "rtk-haiku", input_len: command.length, raw_len: result.length, output_len: filtered.length, exit_code: exitCode, rtk_cmd: rtkCmd, output: filtered.slice(0, 3000), duration_ms: Date.now() - start, usage: rtk_usage ?? undefined });
     return maybeTrailerForExec("dmitry_exec", result, command, exitCode, filtered);
@@ -223,7 +229,7 @@ export async function handleExec(
     raw,
   ].join("\n");
 
-  const { result: raw_result, usage } = await oneshot(prompt, { timeout: timeout ?? 60_000, systemPrompt: FILTER_SYSTEM_PROMPT, tools: "", replaceSystemPrompt: true });
+  const { result: raw_result, usage } = await oneshot(prompt, { timeout: HAIKU_FILTER_TIMEOUT_MS, systemPrompt: FILTER_SYSTEM_PROMPT, tools: "", replaceSystemPrompt: true });
   const result = stripMarkdown(raw_result);
   log({ ts: new Date().toISOString(), tool: "dmitry_exec", input: command, route: "haiku", input_len: command.length, raw_len: raw.length, output_len: result.length, exit_code: exitCode, output: result.slice(0, 3000), duration_ms: Date.now() - start, usage: usage ?? undefined });
   return maybeTrailerForExec("dmitry_exec", raw, command, exitCode, result);
@@ -340,7 +346,7 @@ export async function handleTest(params: { command: string; timeout?: number }):
     "",
     raw,
   ].join("\n");
-  const { result: raw_result, usage } = await oneshot(prompt, { timeout: params.timeout ?? 120_000, systemPrompt: FILTER_SYSTEM_PROMPT, tools: "", replaceSystemPrompt: true });
+  const { result: raw_result, usage } = await oneshot(prompt, { timeout: HAIKU_FILTER_TIMEOUT_MS, systemPrompt: FILTER_SYSTEM_PROMPT, tools: "", replaceSystemPrompt: true });
   const result = stripMarkdown(raw_result);
   log({ ts: new Date().toISOString(), tool: "dmitry_test", input: params.command, route: "haiku", input_len: params.command.length, raw_len: raw.length, output_len: result.length, exit_code: exitCode, output: result.slice(0, 3000), duration_ms: Date.now() - start, usage: usage ?? undefined });
   return maybeTrailerForExec("dmitry_test", raw, params.command, exitCode, result);

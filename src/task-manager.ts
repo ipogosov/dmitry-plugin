@@ -29,6 +29,21 @@ const DISALLOWED_TOOLS = [
 // alive past cache expiry just burns RAM — the next call would cache-miss anyway.
 const IDLE_KILL_MS = 5 * 60 * 1000;
 
+// Per-dispatch idle watchdog. Kills the in-flight request with a partial-result
+// marker if the subagent emits no assistant turn (no heartbeat) for this long.
+// Catches hangs where wall-clock has NOT elapsed but the CLI is silently stuck
+// (e.g. the CLI-retry pattern that produces no output). Threshold chosen from
+// log analysis: the longest observed legitimate inter-turn gap was 487s (~8min),
+// so 10min gives a safety margin while still catching multi-minute hangs well
+// before the dispatcher's wall-clock ceiling fires. Env DMITRY_TASK_IDLE_MS
+// overrides; set 0 to disable.
+const TASK_IDLE_WATCHDOG_MS = (() => {
+  const raw = process.env.DMITRY_TASK_IDLE_MS;
+  if (raw === undefined) return 10 * 60 * 1000;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : 10 * 60 * 1000;
+})();
+
 const SYSTEM_PROMPT = [
   "You are Dmitry Task — a subagent spawned by Claude Opus to execute a delegated task.",
   "You have full code tools: Read, Edit, Write, Grep, Glob, Bash.",
@@ -94,6 +109,10 @@ export class TaskManager {
   private queue: PendingRequest[] = [];
   private activeRequest: { resolve: (v: TaskResult) => void; reject: (e: Error) => void; modelSwitched: boolean } | null = null;
   private idleTimer: NodeJS.Timeout | null = null;
+  // Per-dispatch activity watchdog. Armed at dispatch start, reset on every
+  // assistant turn (heartbeat), cleared on terminal events. Fires cancel() with
+  // an idle-timeout marker when the subagent goes silent mid-request.
+  private activityTimer: NodeJS.Timeout | null = null;
   private turnCount = 0;
   private lastActivity = "";
   private currentDispatchId: string | null = null;
@@ -126,6 +145,7 @@ export class TaskManager {
 
   kill(reason = "manual kill"): void {
     this.clearIdleTimer();
+    this.clearActivityTimer();
     if (this.proc) {
       this.proc.kill("SIGTERM");
       this.proc = null;
@@ -152,10 +172,15 @@ export class TaskManager {
   // request with a partial-result marker so the caller can still see what the
   // subagent did (files on disk, commits made) before the cancel landed.
   // Returns true if there was an active request to cancel.
-  cancel(timeoutMs: number): boolean {
+  // `reason` distinguishes dispatcher wall-clock ("wall-clock") from the
+  // in-worker idle watchdog ("idle") in the partial marker text.
+  cancel(timeoutMs: number, reason: "wall-clock" | "idle" = "wall-clock"): boolean {
     if (!this.activeRequest) return false;
+    const marker = reason === "idle"
+      ? `[DMITRY_IDLE_TIMEOUT after ${timeoutMs}ms silent — partial result, subagent killed]`
+      : `[DMITRY_TIMEOUT after ${timeoutMs}ms — partial result, subagent killed]`;
     const partial = [
-      `[DMITRY_TIMEOUT after ${timeoutMs}ms — partial result, subagent killed]`,
+      marker,
       `Turns completed: ${this.turnCount}`,
       `Last activity: ${this.lastActivity || "(no assistant turns yet)"}`,
       "Files written and commits made before this point are on disk — verify via git log / filesystem before redispatching.",
@@ -172,6 +197,7 @@ export class TaskManager {
       this.buffer = "";
       this.busy = false;
       this.clearIdleTimer();
+      this.clearActivityTimer();
     }
     // Keep queue intact: any follow-up caller gets a fresh process via drain().
     this.drain();
@@ -222,6 +248,7 @@ export class TaskManager {
     this.currentTurnStart = this.currentDispatchStart;
     this.lastMessageId = null;
     this.consecutiveEmptyTurns = 0;
+    this.armActivityTimer();
 
     const input =
       JSON.stringify({
@@ -306,6 +333,7 @@ export class TaskManager {
         this.buffer = "";
         this.busy = false;
         this.clearIdleTimer();
+        this.clearActivityTimer();
         if (this.activeRequest) {
           this.emitProfile("error");
           this.activeRequest.reject(new Error(`Task process exited with code ${code}`));
@@ -320,6 +348,7 @@ export class TaskManager {
         this.proc = null;
         this.currentModel = null;
         this.clearIdleTimer();
+        this.clearActivityTimer();
         if (this.activeRequest) {
           this.activeRequest.reject(new Error(`Task process error: ${err.message}`));
           this.activeRequest = null;
@@ -384,6 +413,8 @@ export class TaskManager {
       const summary = toolNames.length > 0 ? `tool=${toolNames.join(",")}` : `text=${textLen}ch`;
       const model = this.currentModel ?? "?";
       this.lastActivity = `turn ${this.turnCount} ${summary}`;
+      // Heartbeat observed — postpone the idle watchdog.
+      this.armActivityTimer();
       process.stderr.write(`[dmitry.task] turn ${this.turnCount} model=${model} ${summary}\n`);
       logHeartbeat({
         ts: new Date().toISOString(),
@@ -434,6 +465,7 @@ export class TaskManager {
     if (msg.type !== "result") return;
 
     if (msg.subtype === "success") {
+      this.clearActivityTimer();
       this.emitProfile("success");
       if (this.activeRequest) {
         // Sum tokens across currentTurns — which already dedupes continuation
@@ -469,6 +501,7 @@ export class TaskManager {
     }
 
     if (msg.subtype === "error") {
+      this.clearActivityTimer();
       this.emitProfile("error");
       if (this.activeRequest) {
         this.activeRequest.reject(
@@ -522,6 +555,31 @@ export class TaskManager {
     if (this.idleTimer) {
       clearTimeout(this.idleTimer);
       this.idleTimer = null;
+    }
+  }
+
+  // Idle watchdog: fires if no heartbeat (assistant turn) arrives within the
+  // configured window. Re-armed from scratch on every heartbeat, so any
+  // progress postpones the deadline. Disabled entirely when TASK_IDLE_WATCHDOG_MS
+  // is 0.
+  private armActivityTimer(): void {
+    this.clearActivityTimer();
+    if (TASK_IDLE_WATCHDOG_MS <= 0) return;
+    this.activityTimer = setTimeout(() => {
+      this.activityTimer = null;
+      if (!this.activeRequest) return;
+      process.stderr.write(
+        `[dmitry.task] idle-watchdog: no heartbeat for ${TASK_IDLE_WATCHDOG_MS}ms, cancelling (last: ${this.lastActivity || "none"})\n`,
+      );
+      this.cancel(TASK_IDLE_WATCHDOG_MS, "idle");
+    }, TASK_IDLE_WATCHDOG_MS);
+    this.activityTimer.unref?.();
+  }
+
+  private clearActivityTimer(): void {
+    if (this.activityTimer) {
+      clearTimeout(this.activityTimer);
+      this.activityTimer = null;
     }
   }
 }
