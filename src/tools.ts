@@ -20,6 +20,14 @@ const DMITRY_IMPORT_RE = /^@dmitry\.md\s*\r?\n?/m;
 // (conservative for logs/code mixes) to convert back to characters.
 const MAX_HAIKU_FILTER_INPUT_CHARS = Math.floor(200_000 * 3 * 0.95);
 
+// Filter bypass byte threshold. Below this raw size the Haiku call cost
+// (~$0.005-0.02) exceeds the displacement value of any compression it could
+// produce. Empirical breakpoint from log audit (1382 calls): bucket 2-4KB
+// averages -$0.0098/call N=15, bucket 4-8KB is break-even, ≥8KB averages
+// +$0.02+/call. 4096 captures 93% of historical filter calls and net-positive
+// across all parent-turn horizons (3/15/50).
+const MIN_HAIKU_FILTER_INPUT_CHARS = 4096;
+
 // Haiku filter budget. Independent of the user's shell `timeout` — the filter
 // is a short summarization task that runs at Haiku latency regardless of how
 // long the underlying command ran. 90s covers the p99 observed in logs; the
@@ -167,8 +175,9 @@ export async function handleExec(
     const { output: result, exitCode } = await execCommand(rtkCmd, timeout ?? 60_000);
     const lineCount = result.split("\n").length;
 
-    // Short output — return raw, no filter cost
-    if (lineCount < 10) {
+    // Short output — return raw, no filter cost. Bypass on either the line
+    // shortcut OR the byte threshold (filter cost ≥ compression value below it).
+    if (lineCount < 10 || result.length < MIN_HAIKU_FILTER_INPUT_CHARS) {
       log({ ts: new Date().toISOString(), tool: "dmitry_exec", input: command, route: "rtk", input_len: command.length, output_len: result.length, exit_code: exitCode, rtk_cmd: rtkCmd, output: result.slice(0, 1000), duration_ms: Date.now() - start });
       return maybeTrailerForExec("dmitry_exec", result, command, exitCode, result);
     }
@@ -202,8 +211,9 @@ export async function handleExec(
   const { output: raw, exitCode } = await execCommand(command, timeout ?? 60_000);
   const lineCount = raw.split("\n").length;
 
-  // Short output — return as-is
-  if (lineCount < 10) {
+  // Short output — return as-is. Bypass on either the line shortcut OR the
+  // byte threshold (filter cost ≥ compression value below it).
+  if (lineCount < 10 || raw.length < MIN_HAIKU_FILTER_INPUT_CHARS) {
     log({ ts: new Date().toISOString(), tool: "dmitry_exec", input: command, route: "short", input_len: command.length, output_len: raw.length, exit_code: exitCode, output: raw.slice(0, 1000), duration_ms: Date.now() - start });
     return maybeTrailerForExec("dmitry_exec", raw, command, exitCode, raw);
   }
@@ -331,8 +341,9 @@ export async function handleTest(params: { command: string; timeout?: number }):
   const { output: raw, exitCode } = await execCommand(params.command, params.timeout ?? 120_000);
   const lineCount = raw.split("\n").length;
 
-  // Short output — return as-is
-  if (lineCount < 20) {
+  // Short output — return as-is. Bypass on either the line shortcut OR the
+  // byte threshold (filter cost ≥ compression value below it).
+  if (lineCount < 20 || raw.length < MIN_HAIKU_FILTER_INPUT_CHARS) {
     log({ ts: new Date().toISOString(), tool: "dmitry_test", input: params.command, route: "short", input_len: params.command.length, output_len: raw.length, exit_code: exitCode, duration_ms: Date.now() - start });
     return maybeTrailerForExec("dmitry_test", raw, params.command, exitCode, raw);
   }
