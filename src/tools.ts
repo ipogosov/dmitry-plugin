@@ -1,4 +1,4 @@
-import { execCommand } from "./executor.js";
+import { execCommand, type ExecKilled } from "./executor.js";
 import { CliManager } from "./cli-manager.js";
 import { TaskManager, type TaskModel } from "./task-manager.js";
 import { execFile } from "node:child_process";
@@ -161,6 +161,22 @@ function rtkRewrite(command: string): Promise<string | null> {
   });
 }
 
+// Marker prepended to partial output when the executor killed the process by
+// idle watchdog or wall-clock cap. Lets the parent see what the process
+// emitted before death, what kind of kill happened, and that filesystem side
+// effects (writes, commits) before the cut-off persist on disk.
+function killMarker(killed: ExecKilled | null): string {
+  if (!killed) return "";
+  const seconds = Math.round(killed.afterMs / 1000);
+  const why = killed.reason === "idle"
+    ? `${seconds}s of silence (no stdout/stderr)`
+    : `${seconds}s wall-clock cap`;
+  return [
+    `[DMITRY_EXEC_KILLED after ${why} — partial output below; process killed; filesystem side effects before this point persist]`,
+    "",
+  ].join("\n");
+}
+
 export async function handleExec(
   params: { command: string; timeout?: number },
 ): Promise<string> {
@@ -172,19 +188,20 @@ export async function handleExec(
   // Check RTK first — if covered, run through RTK directly (no double execution)
   const rtkCmd = await rtkRewrite(command);
   if (rtkCmd) {
-    const { output: result, exitCode } = await execCommand(rtkCmd, timeout ?? 60_000);
+    const { output: result, exitCode, killed } = await execCommand(rtkCmd, timeout ?? 60_000);
+    const marker = killMarker(killed);
     const lineCount = result.split("\n").length;
 
     // Short output — return raw, no filter cost. Bypass on either the line
     // shortcut OR the byte threshold (filter cost ≥ compression value below it).
     if (lineCount < 10 || result.length < MIN_HAIKU_FILTER_INPUT_CHARS) {
-      log({ ts: new Date().toISOString(), tool: "dmitry_exec", input: command, route: "rtk", input_len: command.length, output_len: result.length, exit_code: exitCode, rtk_cmd: rtkCmd, output: result.slice(0, 1000), duration_ms: Date.now() - start });
-      return maybeTrailerForExec("dmitry_exec", result, command, exitCode, result);
+      log({ ts: new Date().toISOString(), tool: "dmitry_exec", input: command, route: "rtk", input_len: command.length, output_len: result.length, exit_code: exitCode, rtk_cmd: rtkCmd, output: result.slice(0, 1000), duration_ms: Date.now() - start, killed: killed ?? undefined });
+      return maybeTrailerForExec("dmitry_exec", result, command, exitCode, marker + result);
     }
 
     // Oversize — fail fast rather than dump megabytes into parent context
     if (result.length > MAX_HAIKU_FILTER_INPUT_CHARS) {
-      log({ ts: new Date().toISOString(), tool: "dmitry_exec", input: command, route: "rtk-oversize", input_len: command.length, raw_len: result.length, exit_code: exitCode, rtk_cmd: rtkCmd, duration_ms: Date.now() - start });
+      log({ ts: new Date().toISOString(), tool: "dmitry_exec", input: command, route: "rtk-oversize", input_len: command.length, raw_len: result.length, exit_code: exitCode, rtk_cmd: rtkCmd, duration_ms: Date.now() - start, killed: killed ?? undefined });
       throw new Error(
         `dmitry_exec: RTK output ${result.length} chars exceeds Haiku filter limit ${MAX_HAIKU_FILTER_INPUT_CHARS} (200k tokens × 3 chars/token × 0.95 safety gap). ` +
           `Narrow the command scope: restrict paths, add include/exclude filters, or pre-filter with head/tail.`,
@@ -203,26 +220,27 @@ export async function handleExec(
 
     const { result: raw_filtered, usage: rtk_usage } = await oneshot(filterPrompt, { timeout: HAIKU_FILTER_TIMEOUT_MS, systemPrompt: FILTER_SYSTEM_PROMPT, tools: "", replaceSystemPrompt: true });
     const filtered = stripMarkdown(raw_filtered);
-    log({ ts: new Date().toISOString(), tool: "dmitry_exec", input: command, route: "rtk-haiku", input_len: command.length, raw_len: result.length, output_len: filtered.length, exit_code: exitCode, rtk_cmd: rtkCmd, output: filtered.slice(0, 3000), duration_ms: Date.now() - start, usage: rtk_usage ?? undefined });
-    return maybeTrailerForExec("dmitry_exec", result, command, exitCode, filtered);
+    log({ ts: new Date().toISOString(), tool: "dmitry_exec", input: command, route: "rtk-haiku", input_len: command.length, raw_len: result.length, output_len: filtered.length, exit_code: exitCode, rtk_cmd: rtkCmd, output: filtered.slice(0, 3000), duration_ms: Date.now() - start, usage: rtk_usage ?? undefined, killed: killed ?? undefined });
+    return maybeTrailerForExec("dmitry_exec", result, command, exitCode, marker + filtered);
   }
 
   // RTK doesn't cover — run raw
-  const { output: raw, exitCode } = await execCommand(command, timeout ?? 60_000);
+  const { output: raw, exitCode, killed } = await execCommand(command, timeout ?? 60_000);
+  const marker = killMarker(killed);
   const lineCount = raw.split("\n").length;
 
   // Short output — return as-is. Bypass on either the line shortcut OR the
   // byte threshold (filter cost ≥ compression value below it).
   if (lineCount < 10 || raw.length < MIN_HAIKU_FILTER_INPUT_CHARS) {
-    log({ ts: new Date().toISOString(), tool: "dmitry_exec", input: command, route: "short", input_len: command.length, output_len: raw.length, exit_code: exitCode, output: raw.slice(0, 1000), duration_ms: Date.now() - start });
-    return maybeTrailerForExec("dmitry_exec", raw, command, exitCode, raw);
+    log({ ts: new Date().toISOString(), tool: "dmitry_exec", input: command, route: "short", input_len: command.length, output_len: raw.length, exit_code: exitCode, output: raw.slice(0, 1000), duration_ms: Date.now() - start, killed: killed ?? undefined });
+    return maybeTrailerForExec("dmitry_exec", raw, command, exitCode, marker + raw);
   }
 
   // Guard: Haiku filter can't handle inputs bigger than its context window.
   // Fail fast with a clear message instead of letting oneshot choke or the
   // MCP transport reject an oversized result downstream.
   if (raw.length > MAX_HAIKU_FILTER_INPUT_CHARS) {
-    log({ ts: new Date().toISOString(), tool: "dmitry_exec", input: command, route: "oversize", input_len: command.length, raw_len: raw.length, exit_code: exitCode, duration_ms: Date.now() - start });
+    log({ ts: new Date().toISOString(), tool: "dmitry_exec", input: command, route: "oversize", input_len: command.length, raw_len: raw.length, exit_code: exitCode, duration_ms: Date.now() - start, killed: killed ?? undefined });
     throw new Error(
       `dmitry_exec: raw output ${raw.length} chars exceeds Haiku filter limit ${MAX_HAIKU_FILTER_INPUT_CHARS} (200k tokens × 3 chars/token × 0.95 safety gap). ` +
         `Narrow the command scope: restrict paths, add include/exclude filters, or pre-filter with rtk grep.`,
@@ -241,8 +259,8 @@ export async function handleExec(
 
   const { result: raw_result, usage } = await oneshot(prompt, { timeout: HAIKU_FILTER_TIMEOUT_MS, systemPrompt: FILTER_SYSTEM_PROMPT, tools: "", replaceSystemPrompt: true });
   const result = stripMarkdown(raw_result);
-  log({ ts: new Date().toISOString(), tool: "dmitry_exec", input: command, route: "haiku", input_len: command.length, raw_len: raw.length, output_len: result.length, exit_code: exitCode, output: result.slice(0, 3000), duration_ms: Date.now() - start, usage: usage ?? undefined });
-  return maybeTrailerForExec("dmitry_exec", raw, command, exitCode, result);
+  log({ ts: new Date().toISOString(), tool: "dmitry_exec", input: command, route: "haiku", input_len: command.length, raw_len: raw.length, output_len: result.length, exit_code: exitCode, output: result.slice(0, 3000), duration_ms: Date.now() - start, usage: usage ?? undefined, killed: killed ?? undefined });
+  return maybeTrailerForExec("dmitry_exec", raw, command, exitCode, marker + result);
 }
 
 export async function handleAsk(
@@ -338,14 +356,15 @@ export async function handleDoc(params: { task: string }): Promise<string> {
 export async function handleTest(params: { command: string; timeout?: number }): Promise<string> {
   const start = Date.now();
   maybeInstallDmitryMd();
-  const { output: raw, exitCode } = await execCommand(params.command, params.timeout ?? 120_000);
+  const { output: raw, exitCode, killed } = await execCommand(params.command, params.timeout ?? 120_000);
+  const marker = killMarker(killed);
   const lineCount = raw.split("\n").length;
 
   // Short output — return as-is. Bypass on either the line shortcut OR the
   // byte threshold (filter cost ≥ compression value below it).
   if (lineCount < 20 || raw.length < MIN_HAIKU_FILTER_INPUT_CHARS) {
-    log({ ts: new Date().toISOString(), tool: "dmitry_test", input: params.command, route: "short", input_len: params.command.length, output_len: raw.length, exit_code: exitCode, duration_ms: Date.now() - start });
-    return maybeTrailerForExec("dmitry_test", raw, params.command, exitCode, raw);
+    log({ ts: new Date().toISOString(), tool: "dmitry_test", input: params.command, route: "short", input_len: params.command.length, output_len: raw.length, exit_code: exitCode, duration_ms: Date.now() - start, killed: killed ?? undefined });
+    return maybeTrailerForExec("dmitry_test", raw, params.command, exitCode, marker + raw);
   }
 
   // Long output — filter through Haiku, keep only failures
@@ -359,8 +378,8 @@ export async function handleTest(params: { command: string; timeout?: number }):
   ].join("\n");
   const { result: raw_result, usage } = await oneshot(prompt, { timeout: HAIKU_FILTER_TIMEOUT_MS, systemPrompt: FILTER_SYSTEM_PROMPT, tools: "", replaceSystemPrompt: true });
   const result = stripMarkdown(raw_result);
-  log({ ts: new Date().toISOString(), tool: "dmitry_test", input: params.command, route: "haiku", input_len: params.command.length, raw_len: raw.length, output_len: result.length, exit_code: exitCode, output: result.slice(0, 3000), duration_ms: Date.now() - start, usage: usage ?? undefined });
-  return maybeTrailerForExec("dmitry_test", raw, params.command, exitCode, result);
+  log({ ts: new Date().toISOString(), tool: "dmitry_test", input: params.command, route: "haiku", input_len: params.command.length, raw_len: raw.length, output_len: result.length, exit_code: exitCode, output: result.slice(0, 3000), duration_ms: Date.now() - start, usage: usage ?? undefined, killed: killed ?? undefined });
+  return maybeTrailerForExec("dmitry_test", raw, params.command, exitCode, marker + result);
 }
 
 export function handleAskKill(cli: CliManager): string {

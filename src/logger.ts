@@ -28,8 +28,9 @@ interface LogEntry {
   raw_len?: number;      // exec haiku route: raw output length before filtering
   output_len?: number;
   output?: string;       // first N chars returned to parent agent
-  exit_code?: number;    // exec: process exit code (0 = success, -1 = signal/spawn error)
+  exit_code?: number;    // exec: process exit code (0 = success, 124 = killed by dmitry, -1 = signal/spawn error)
   rtk_cmd?: string;      // exec rtk route: rewritten command
+  killed?: { reason: "idle" | "wall-clock"; afterMs: number };  // exec/test: process killed by idle watchdog or wall-clock cap
   duration_ms: number;
   error?: string;
   usage?: Usage;         // token usage from CLI response
