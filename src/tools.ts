@@ -192,9 +192,9 @@ export async function handleExec(
     const marker = killMarker(killed);
     const lineCount = result.split("\n").length;
 
-    // Short output — return raw, no filter cost. Bypass on either the line
-    // shortcut OR the byte threshold (filter cost ≥ compression value below it).
-    if (lineCount < 10 || result.length < MIN_HAIKU_FILTER_INPUT_CHARS) {
+    // Short output — return raw, no filter cost. Filter cost ≥ compression
+    // value below MIN_HAIKU_FILTER_INPUT_CHARS.
+    if (result.length < MIN_HAIKU_FILTER_INPUT_CHARS) {
       log({ ts: new Date().toISOString(), tool: "dmitry_exec", input: command, route: "rtk", input_len: command.length, output_len: result.length, exit_code: exitCode, rtk_cmd: rtkCmd, output: result.slice(0, 1000), duration_ms: Date.now() - start, killed: killed ?? undefined });
       return maybeTrailerForExec("dmitry_exec", result, command, exitCode, marker + result);
     }
@@ -229,9 +229,9 @@ export async function handleExec(
   const marker = killMarker(killed);
   const lineCount = raw.split("\n").length;
 
-  // Short output — return as-is. Bypass on either the line shortcut OR the
-  // byte threshold (filter cost ≥ compression value below it).
-  if (lineCount < 10 || raw.length < MIN_HAIKU_FILTER_INPUT_CHARS) {
+  // Short output — return as-is. Filter cost ≥ compression value below
+  // MIN_HAIKU_FILTER_INPUT_CHARS.
+  if (raw.length < MIN_HAIKU_FILTER_INPUT_CHARS) {
     log({ ts: new Date().toISOString(), tool: "dmitry_exec", input: command, route: "short", input_len: command.length, output_len: raw.length, exit_code: exitCode, output: raw.slice(0, 1000), duration_ms: Date.now() - start, killed: killed ?? undefined });
     return maybeTrailerForExec("dmitry_exec", raw, command, exitCode, marker + raw);
   }
@@ -360,9 +360,9 @@ export async function handleTest(params: { command: string; timeout?: number }):
   const marker = killMarker(killed);
   const lineCount = raw.split("\n").length;
 
-  // Short output — return as-is. Bypass on either the line shortcut OR the
-  // byte threshold (filter cost ≥ compression value below it).
-  if (lineCount < 20 || raw.length < MIN_HAIKU_FILTER_INPUT_CHARS) {
+  // Short output — return as-is. Filter cost ≥ compression value below
+  // MIN_HAIKU_FILTER_INPUT_CHARS.
+  if (raw.length < MIN_HAIKU_FILTER_INPUT_CHARS) {
     log({ ts: new Date().toISOString(), tool: "dmitry_test", input: params.command, route: "short", input_len: params.command.length, output_len: raw.length, exit_code: exitCode, duration_ms: Date.now() - start, killed: killed ?? undefined });
     return maybeTrailerForExec("dmitry_test", raw, params.command, exitCode, marker + raw);
   }
