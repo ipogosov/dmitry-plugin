@@ -205,7 +205,7 @@ export function computeStats(period: "today" | "week" | "all"): string {
   const logDir = join(homedir(), ".dmitry", "logs");
   let files: string[];
   try {
-    files = readdirSync(logDir).filter(f => f.endsWith(".jsonl")).sort();
+    files = readdirSync(logDir).filter(f => /^\d{4}-\d{2}-\d{2}\.jsonl$/.test(f)).sort();
   } catch {
     return "No logs found. Dmitry hasn't been used yet.";
   }
